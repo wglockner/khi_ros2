@@ -19,6 +19,7 @@ Controller(F60A): Higher than ```ASF_010000020```
  * RS080N-A001
  * BX300L-B001
  * BXP135X-A001
+ * CX110L-BC01
 
 ## Requirements
 
@@ -81,6 +82,8 @@ Set the load mass and load center of gravity for the tool mounted on the robot.
       7.00      0.00      0.00      0.00      0.00      0.00      0.00
 Change? (If not, Press RETURN only.)
 ```
+## Install rosdeps
+rosdep install --from-paths src --ignore-src -r -y
 
 ## How to Launch
 
