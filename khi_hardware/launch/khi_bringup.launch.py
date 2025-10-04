@@ -47,6 +47,8 @@ def generate_launch_description():
                 "rs080n-a001",
                 "bx300l-b001",
                 "bxp135x-a001",
+                "cx110l-bc01",
+                "cx165l-bc01",
             ],
             description="robot name",
         )
@@ -72,6 +74,7 @@ def generate_launch_description():
         DeclareLaunchArgument(
             "robot_controller",
             choices=[
+                "e",
                 "f",
             ],
             default_value="f",
@@ -217,6 +220,8 @@ def launch_setup(contest, *args, **kwargs):
         robot_series = "bx"
     if "bxp" in str(robot.perform(contest)):
         robot_series = "bxp"
+    if "cx" in str(robot.perform(contest)):
+        robot_series = "cx"
 
     # Get URDF via xacro
     robot_description_content = Command(
