@@ -8,15 +8,15 @@
 
     <xacro:include filename="$(find khi_description)/urdf/material.xacro"/>
 
-    <!-- Fix robot to world -->
-    <link name="world"/>
+    <!-- Fix robot to world
+    <link name="world"/>-->
 
-    <!-- Joint  -->
+    <!-- Joint  
     <joint name="${prefix}world2base" type="fixed">
       <parent link="world"/>
       <child link="${prefix}base_link"/>
       <origin xyz="0 0 0" rpy="0 0 0" />
-    </joint>
+    </joint>-->
     <joint name="${prefix}joint1" type="${jt1_type}">
       <axis xyz="${axis1}" />
       <limit effort="1000.0" lower="${jt1_min_position}" upper="${jt1_max_position}" velocity="${jt1_max_velocity}"/>
