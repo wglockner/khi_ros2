@@ -28,21 +28,22 @@ namespace khi_hardware
 KhiHardwareInterface::~KhiHardwareInterface() { driver_->error(); }
 
 hardware_interface::CallbackReturn KhiHardwareInterface::on_init(
-  const hardware_interface::HardwareInfo & hardware_info)
+  const hardware_interface::HardwareComponentInterfaceParams & params)
 {
   RCLCPP_INFO(rclcpp::get_logger("khi_hardware"), "on_init");
   if (
-    hardware_interface::SystemInterface::on_init(hardware_info) !=
+    hardware_interface::SystemInterface::on_init(params) !=
     hardware_interface::CallbackReturn::SUCCESS)
   {
     return hardware_interface::CallbackReturn::ERROR;
   }
 
   // Initialize
-  info_ = hardware_info;
+  info_ = params.hardware_info;
   is_cleaning_up_ = false;
   is_deactivating_ = false;
   is_shutdowning_ = false;
+  is_active_ = false;
 
   // Check
   for (const hardware_interface::ComponentInfo & joint : info_.joints)
@@ -182,6 +183,7 @@ hardware_interface::CallbackReturn KhiHardwareInterface::on_activate(
     return hardware_interface::CallbackReturn::ERROR;
   }
 
+  is_active_ = true;
   RCLCPP_INFO(rclcpp::get_logger("khi_hardware"), "Activation successful");
   return hardware_interface::CallbackReturn::SUCCESS;
 }
@@ -201,6 +203,7 @@ hardware_interface::CallbackReturn KhiHardwareInterface::on_deactivate(
     return hardware_interface::CallbackReturn::ERROR;
   }
 
+  is_active_ = false;
   is_deactivating_ = false;
   RCLCPP_INFO(rclcpp::get_logger("khi_hardware"), "Deactivation successful");
   return hardware_interface::CallbackReturn::SUCCESS;
@@ -216,16 +219,36 @@ hardware_interface::return_type KhiHardwareInterface::read(
 
   if (!driver_->is_communicating())
   {
-    RCLCPP_ERROR(
-      rclcpp::get_logger("khi_hardware"), "Communication with the robot controller has been lost.");
+    // Throttle error logging to avoid spam at 500 Hz
+    static rclcpp::Time last_error_time(0, 0, RCL_ROS_TIME);
+    rclcpp::Time now = rclcpp::Clock(RCL_ROS_TIME).now();
+    if ((now - last_error_time).seconds() > 1.0)  // Log at most once per second
+    {
+      RCLCPP_ERROR(
+        rclcpp::get_logger("khi_hardware"), "Communication with the robot controller has been lost.");
+      last_error_time = now;
+    }
     return hardware_interface::return_type::ERROR;
   }
 
-  driver_->monitor_robot_health();
+  // Only monitor robot health periodically (every 50 cycles = 10 Hz) to reduce CPU usage
+  static int health_monitor_counter = 0;
+  if (++health_monitor_counter >= 50)
+  {
+    driver_->monitor_robot_health();
+    health_monitor_counter = 0;
+  }
 
   if (!driver_->read())
   {
-    RCLCPP_ERROR(rclcpp::get_logger("khi_hardware"), "read err");
+    // Throttle error logging
+    static rclcpp::Time last_read_error_time(0, 0, RCL_ROS_TIME);
+    rclcpp::Time now = rclcpp::Clock(RCL_ROS_TIME).now();
+    if ((now - last_read_error_time).seconds() > 1.0)
+    {
+      RCLCPP_ERROR(rclcpp::get_logger("khi_hardware"), "read err");
+      last_read_error_time = now;
+    }
   }
 
   return hardware_interface::return_type::OK;
@@ -237,9 +260,7 @@ hardware_interface::return_type KhiHardwareInterface::write(
   auto deactivate = [&]()
   {
     driver_->deactivate();
-    set_state(rclcpp_lifecycle::State(
-      lifecycle_msgs::msg::State::PRIMARY_STATE_INACTIVE,
-      hardware_interface::lifecycle_state_names::INACTIVE));
+    is_active_ = false;
     return hardware_interface::return_type::OK;
   };
 
@@ -248,28 +269,49 @@ hardware_interface::return_type KhiHardwareInterface::write(
     return hardware_interface::return_type::OK;
   }
 
-  if (get_state().id() == lifecycle_msgs::msg::State::PRIMARY_STATE_INACTIVE)
+  if (!is_active_)
   {
     return hardware_interface::return_type::OK;
   }
 
   if (!driver_->is_communicating())
   {
-    RCLCPP_ERROR(
-      rclcpp::get_logger("khi_hardware"), "Communication with the robot controller has been lost.");
+    // Throttle error logging
+    static rclcpp::Time last_error_time(0, 0, RCL_ROS_TIME);
+    rclcpp::Time now = rclcpp::Clock(RCL_ROS_TIME).now();
+    if ((now - last_error_time).seconds() > 1.0)
+    {
+      RCLCPP_ERROR(
+        rclcpp::get_logger("khi_hardware"), "Communication with the robot controller has been lost.");
+      last_error_time = now;
+    }
     return hardware_interface::return_type::ERROR;
   }
 
   if (!driver_->is_writable())
   {
     deactivate();
-    RCLCPP_INFO(rclcpp::get_logger("khi_hardware"), "deactivate");
+    // Throttle deactivation logging (at most once per second)
+    static rclcpp::Time last_deactivate_log_time(0, 0, RCL_ROS_TIME);
+    rclcpp::Time now = rclcpp::Clock(RCL_ROS_TIME).now();
+    if ((now - last_deactivate_log_time).seconds() > 1.0)
+    {
+      RCLCPP_INFO(rclcpp::get_logger("khi_hardware"), "deactivate");
+      last_deactivate_log_time = now;
+    }
     return hardware_interface::return_type::OK;
   }
 
   if (!driver_->write())
   {
-    RCLCPP_ERROR(rclcpp::get_logger("khi_hardware"), "write err");
+    // Throttle error logging
+    static rclcpp::Time last_write_error_time(0, 0, RCL_ROS_TIME);
+    rclcpp::Time now = rclcpp::Clock(RCL_ROS_TIME).now();
+    if ((now - last_write_error_time).seconds() > 1.0)
+    {
+      RCLCPP_ERROR(rclcpp::get_logger("khi_hardware"), "write err");
+      last_write_error_time = now;
+    }
     deactivate();
     return hardware_interface::return_type::OK;
   }

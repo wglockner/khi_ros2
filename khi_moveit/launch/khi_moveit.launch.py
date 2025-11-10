@@ -204,7 +204,9 @@ def launch_setup(context, *args, **kwargs):
         )
     }
 
-    kinematics_yaml = load_yaml("khi_moveit", "config/kinematics.yaml")
+    robot_description_kinematics = {
+        "robot_description_kinematics": load_yaml("khi_moveit", "config/kinematics.yaml")
+    }
 
     ompl_planning = load_yaml("khi_moveit", "config/ompl_planning.yaml")
     planning_pipelines = load_yaml("khi_moveit", "config/planning_pipelines.yaml")
@@ -245,7 +247,7 @@ def launch_setup(context, *args, **kwargs):
         parameters=[
             robot_description,
             robot_description_semantic,
-            kinematics_yaml,
+            robot_description_kinematics,
             planning_pipelines,
             trajectory_execution,
             moveit_controllers,
@@ -269,7 +271,7 @@ def launch_setup(context, *args, **kwargs):
             robot_description,
             robot_description_semantic,
             planning_pipelines,
-            kinematics_yaml,
+            robot_description_kinematics,
             robot_description_planning,
             {"default_planning_pipeline": planner},
         ],

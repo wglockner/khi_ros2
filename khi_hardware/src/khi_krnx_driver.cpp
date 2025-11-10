@@ -888,18 +888,34 @@ bool KhiKrnxDriver::is_configuration_valid() const
 
   for (int arm_no = 0; arm_no < arm_num; arm_no++)
   {
-    // Convert the argument robot name to uppercase.
+    // Convert the argument robot name to uppercase and normalize hyphens/underscores.
     auto ros_robot_name = robot_.name;
     for (char & c : ros_robot_name)
     {
       c = std::toupper(c);
+      // Normalize hyphens to underscores for comparison
+      if (c == '-')
+      {
+        c = '_';
+      }
     }
 
     // Verify that the robot name matches.
     constexpr int name_size = 64;
     char robot_name[name_size] = {0};
     krnx_GetRobotName(robot_.controller_no, arm_no, robot_name);
-    if (strncmp(robot_name, ros_robot_name.c_str(), ros_robot_name.size()) != 0)
+    // Normalize the robot name from AS: convert to uppercase and normalize hyphens/underscores
+    std::string as_robot_name(robot_name);
+    for (char & c : as_robot_name)
+    {
+      c = std::toupper(c);
+      // Normalize hyphens to underscores for comparison
+      if (c == '-')
+      {
+        c = '_';
+      }
+    }
+    if (strncmp(as_robot_name.c_str(), ros_robot_name.c_str(), ros_robot_name.size()) != 0)
     {
       RCLCPP_ERROR(
         rclcpp::get_logger("khi_hardware"),
