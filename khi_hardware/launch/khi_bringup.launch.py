@@ -43,6 +43,7 @@ def generate_launch_description():
             choices=[
                 "rs007l-b001",
                 "rs015x-a001",
+                "rs013n-a001",
                 "rs025n-a001",
                 "rs080n-a001",
                 "bx300l-b001",
@@ -299,6 +300,16 @@ def launch_setup(contest, *args, **kwargs):
         ],
     )
 
+    spawn_force_torque_sensor_broadcaster = Node(
+        package="controller_manager",
+        executable="spawner",
+        arguments=[
+            "force_torque_sensor_broadcaster",
+            "--controller-manager",
+            "/controller_manager",
+        ],
+    )
+
     spawn_khi_controller = Node(
         package="controller_manager",
         executable="spawner",
@@ -309,6 +320,7 @@ def launch_setup(contest, *args, **kwargs):
         controller_manager_node,
         robot_state_publisher_node,
         spawn_joint_state_broadcaster,
+        spawn_force_torque_sensor_broadcaster,
         spawn_khi_controller,
     ]
 
