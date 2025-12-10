@@ -26,8 +26,13 @@
         <joint name="${prefix}joint5" value="0" />
         <joint name="${prefix}joint6" value="0" />
     </group_state>
+
     <!--END EFFECTOR: Purpose: Represent information about an end effector.-->
     <end_effector name="${prefix}moveit_ee" parent_link="${prefix}link6" group="${prefix}tool" parent_group="${prefix}manipulator" />
+    
+    <!--Groups kinematic plugins -->
+    <kinematics_plugin_config filename="package://khi_moveit/config/kinematics.yaml"/>
+
     <!--DISABLE COLLISIONS: By default it is assumed that any link of the robot could potentially come into collision with any other link in the robot. This tag disables collision checking between a specified pair of links. -->
     <disable_collisions link1="${prefix}base_link" link2="${prefix}link1" reason="Adjacent" />
     <disable_collisions link1="${prefix}base_link" link2="${prefix}link2" reason="Never" />

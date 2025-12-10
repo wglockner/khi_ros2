@@ -37,6 +37,23 @@ def load_yaml(package_name, file_path):
         return None
 
 
+def remove_empty_lists(data):
+    """Recursively remove empty lists from dictionaries to avoid launch parameter issues."""
+    if isinstance(data, dict):
+        result = {}
+        for k, v in data.items():
+            # Skip empty lists
+            if isinstance(v, list) and len(v) == 0:
+                continue
+            # Recursively process nested structures
+            result[k] = remove_empty_lists(v)
+        return result
+    elif isinstance(data, list):
+        return [remove_empty_lists(item) for item in data]
+    else:
+        return data
+
+
 def generate_launch_description():
     declared_arguments = []
     declared_arguments.append(
@@ -205,11 +222,43 @@ def launch_setup(context, *args, **kwargs):
         )
     }
 
-    kinematics_yaml = load_yaml("khi_moveit", "config/kinematics.yaml")
+    kinematics_yaml_raw = load_yaml("khi_moveit", "config/kinematics.yaml")
+    kinematics_yaml = {"robot_description_kinematics": kinematics_yaml_raw}
 
     ompl_planning = load_yaml("khi_moveit", "config/ompl_planning.yaml")
-    planning_pipelines = load_yaml("khi_moveit", "config/planning_pipelines.yaml")
-    planning_pipelines["ompl"].update(ompl_planning)
+    planning_pipelines_raw = load_yaml("khi_moveit", "config/planning_pipelines.yaml")
+    
+    # Extract the pipeline list and restructure to nest everything under planning_pipelines
+    pipeline_list = planning_pipelines_raw.get("planning_pipelines", [])
+    planning_pipelines = {"planning_pipelines": pipeline_list}
+    
+    # Add each pipeline configuration under planning_pipelines namespace
+    for pipeline_name in ["ompl", "pilz", "chomp"]:
+        if pipeline_name in planning_pipelines_raw:
+            planning_pipelines[pipeline_name] = planning_pipelines_raw[pipeline_name].copy()
+    
+    # Merge ompl_planning into ompl section
+    if ompl_planning and "ompl" in planning_pipelines:
+        planning_pipelines["ompl"].update(ompl_planning)
+    
+    # Remove empty lists to avoid launch parameter type issues
+    # Specifically handle request_adapters - if empty, remove it so MoveIt2 uses defaults
+    for pipeline_name in ["ompl", "pilz", "chomp"]:
+        if pipeline_name in planning_pipelines:
+            if "request_adapters" in planning_pipelines[pipeline_name]:
+                if isinstance(planning_pipelines[pipeline_name]["request_adapters"], list):
+                    if len(planning_pipelines[pipeline_name]["request_adapters"]) == 0:
+                        del planning_pipelines[pipeline_name]["request_adapters"]
+    
+    # Remove empty lists, but preserve all non-list keys
+    planning_pipelines = remove_empty_lists(planning_pipelines)
+    
+    # Verify critical fields are present after processing
+    if "ompl" in planning_pipelines:
+        if "planning_plugins" not in planning_pipelines["ompl"]:
+            raise RuntimeError("planning_plugins missing from ompl configuration after processing")
+        if not planning_pipelines["ompl"]["planning_plugins"]:
+            raise RuntimeError("planning_plugins is empty in ompl configuration")
 
     trajectory_execution = load_yaml("khi_moveit", "config/trajectory_execution.yaml")
 
