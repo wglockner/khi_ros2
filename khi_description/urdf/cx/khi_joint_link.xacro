@@ -73,18 +73,20 @@
     <link name="${prefix}base_link">
       <visual>
         <geometry>
-          <xacro:if value="${robot_name=='cx110l-bc01' or robot_name=='cx165l-bc01'}">
+          <xacro:if value="${robot_name=='cx110l-bc01' or robot_name=='cx165l_bc01'}">
             <mesh filename="package://khi_description/meshes/${robot_series}/${robot_name}/J0.stl"/>
           </xacro:if>
+          <mesh filename="package://khi_description/meshes/${robot_series}/${robot_name}/J0.stl"/>
         </geometry>
         <xacro:white/>
         <origin rpy="0 0 0" xyz="0 0 0"/>
       </visual>
       <collision>
         <geometry>
-          <xacro:if value="${robot_name=='cx110l-bc01' or robot_name=='cx165l-bc01'}">
+          <xacro:if value="${robot_name=='cx110l-bc01' or robot_name=='cx165l_bc01'}">
             <mesh filename="package://khi_description/meshes/${robot_series}/${robot_name}/J0.stl"/>
           </xacro:if>
+          <mesh filename="package://khi_description/meshes/${robot_series}/${robot_name}/J0.stl"/>
         </geometry>
         <xacro:white/>
         <origin rpy="0 0 0" xyz="0 0 0"/>
@@ -98,18 +100,20 @@
     <link name="${prefix}link1">
       <visual>
         <geometry>
-          <xacro:if value="${robot_name=='cx110l-bc01' or robot_name=='cx165l-bc01'}">
+          <xacro:if value="${robot_name=='cx110l-bc01' or robot_name=='cx165l_bc01'}">
             <mesh filename="package://khi_description/meshes/${robot_series}/${robot_name}/J1.stl"/>
           </xacro:if>
+          <mesh filename="package://khi_description/meshes/${robot_series}/${robot_name}/J1.stl"/>
         </geometry>
         <xacro:white/>
         <origin xyz="0 0 0" rpy="${radians(l1_rpy_x)} ${radians(l1_rpy_y)} ${radians(l1_rpy_z)}"/>
       </visual>
       <collision>
         <geometry>
-          <xacro:if value="${robot_name=='cx110l-bc01' or robot_name=='cx165l-bc01'}">
+          <xacro:if value="${robot_name=='cx110l-bc01' or robot_name=='cx165l_bc01'}">
             <mesh filename="package://khi_description/meshes/${robot_series}/${robot_name}/J1_hull.stl"/>
           </xacro:if>
+          <mesh filename="package://khi_description/meshes/${robot_series}/${robot_name}/J1_hull.stl"/>
         </geometry>
         <origin xyz="0 0 0" rpy="${radians(l1_rpy_x)} ${radians(l1_rpy_y)} ${radians(l1_rpy_z)}"/>
       </collision>
@@ -122,18 +126,20 @@
     <link name="${prefix}link2">
       <visual>
         <geometry>
-          <xacro:if value="${robot_name=='cx110l-bc01' or robot_name=='cx165l-bc01'}">
+          <xacro:if value="${robot_name=='cx110l-bc01' or robot_name=='cx165l_bc01'}">
             <mesh filename="package://khi_description/meshes/${robot_series}/${robot_name}/J2.stl"/>
           </xacro:if>
+          <mesh filename="package://khi_description/meshes/${robot_series}/${robot_name}/J2.stl"/>
         </geometry>
         <xacro:white/>
         <origin xyz="0 0 0" rpy="${radians(l2_rpy_x)} ${radians(l2_rpy_y)} ${radians(l2_rpy_z)}"/>
       </visual>
       <collision>
         <geometry>
-          <xacro:if value="${robot_name=='cx110l-bc01' or robot_name=='cx165l-bc01'}">
+          <xacro:if value="${robot_name=='cx110l-bc01' or robot_name=='cx165l_bc01'}">
             <mesh filename="package://khi_description/meshes/${robot_series}/${robot_name}/J2_hull.stl"/>
           </xacro:if>
+          <mesh filename="package://khi_description/meshes/${robot_series}/${robot_name}/J2_hull.stl"/>
         </geometry>
         <origin xyz="0 0 0" rpy="${radians(l2_rpy_x)} ${radians(l2_rpy_y)} ${radians(l2_rpy_z)}"/>
       </collision>
@@ -146,18 +152,20 @@
     <link name="${prefix}link3">
       <visual>
         <geometry>
-          <xacro:if value="${robot_name=='cx110l-bc01' or robot_name=='cx165l-bc01'}">
+          <xacro:if value="${robot_name=='cx110l-bc01' or robot_name=='cx165l_bc01'}">
             <mesh filename="package://khi_description/meshes/${robot_series}/${robot_name}/J3.stl"/>
           </xacro:if>
         </geometry>
+        <mesh filename="package://khi_description/meshes/${robot_series}/${robot_name}/J3.stl"/>
         <xacro:white/>
         <origin xyz="0 0 0" rpy="${radians(l3_rpy_x)} ${radians(l3_rpy_y)} ${radians(l3_rpy_z)}"/>
       </visual>
       <collision>
         <geometry>
-          <xacro:if value="${robot_name=='cx110l-bc01' or robot_name=='cx165l-bc01'}">
+          <xacro:if value="${robot_name=='cx110l-bc01' or robot_name=='cx165l_bc01'}">
             <mesh filename="package://khi_description/meshes/${robot_series}/${robot_name}/J3_hull.stl"/>
           </xacro:if>
+          <mesh filename="package://khi_description/meshes/${robot_series}/${robot_name}/J3_hull.stl"/>
         </geometry>
         <origin xyz="0 0 0" rpy="${radians(l3_rpy_x)} ${radians(l3_rpy_y)} ${radians(l3_rpy_z)}"/>
       </collision>
@@ -170,18 +178,20 @@
     <link name="${prefix}link4">
       <visual>
         <geometry>
-          <xacro:if value="${robot_name=='cx110l-bc01' or robot_name=='cx165l-bc01'}">
+          <xacro:if value="${robot_name=='cx110l-bc01' or robot_name=='cx165l_bc01'}">
             <mesh filename="package://khi_description/meshes/${robot_series}/${robot_name}/J4.stl"/>
           </xacro:if>
+          <mesh filename="package://khi_description/meshes/${robot_series}/${robot_name}/J4.stl"/>
         </geometry>
         <xacro:white/>
         <origin xyz="${l4_x} ${l4_y} ${l4_z}" rpy="${radians(l4_rpy_x)} ${radians(l4_rpy_y)} ${radians(l4_rpy_z)}"/>
       </visual>
       <collision>
         <geometry>
-          <xacro:if value="${robot_name=='cx110l-bc01' or robot_name=='cx165l-bc01'}">
+          <xacro:if value="${robot_name=='cx110l-bc01' or robot_name=='cx165l_bc01'}">
             <mesh filename="package://khi_description/meshes/${robot_series}/${robot_name}/J4_hull.stl"/>
           </xacro:if>
+          <mesh filename="package://khi_description/meshes/${robot_series}/${robot_name}/J4_hull.stl"/>
         </geometry>
         <origin xyz="${l4_x} ${l4_y} ${l4_z}" rpy="${radians(l4_rpy_x)} ${radians(l4_rpy_y)} ${radians(l4_rpy_z)}"/>
       </collision>
@@ -194,18 +204,20 @@
     <link name="${prefix}link5">
       <visual>
         <geometry>
-          <xacro:if value="${robot_name=='cx110l-bc01' or robot_name=='cx165l-bc01'}">
+          <xacro:if value="${robot_name=='cx110l-bc01' or robot_name=='cx165l_bc01'}">
             <mesh filename="package://khi_description/meshes/${robot_series}/${robot_name}/J5.stl"/>
           </xacro:if>
+          <mesh filename="package://khi_description/meshes/${robot_series}/${robot_name}/J5.stl"/>
         </geometry>
         <xacro:white/>
         <origin xyz="0 0 0" rpy="${radians(l5_rpy_x)} ${radians(l5_rpy_y)} ${radians(l5_rpy_z)}"/>
       </visual>
       <collision>
         <geometry>
-          <xacro:if value="${robot_name=='cx110l-bc01' or robot_name=='cx165l-bc01'}">
+          <xacro:if value="${robot_name=='cx110l-bc01' or robot_name=='cx165l_bc01'}">
             <mesh filename="package://khi_description/meshes/${robot_series}/${robot_name}/J5_hull.stl"/>
           </xacro:if>
+          <mesh filename="package://khi_description/meshes/${robot_series}/${robot_name}/J5_hull.stl"/>
         </geometry>
         <origin xyz="0 0 0" rpy="${radians(l5_rpy_x)} ${radians(l5_rpy_y)} ${radians(l5_rpy_z)}"/>
       </collision>
@@ -218,18 +230,20 @@
     <link name="${prefix}link6">
       <visual>
         <geometry>
-          <xacro:if value="${robot_name=='cx110l-bc01' or robot_name=='cx165l-bc01'}">
+          <xacro:if value="${robot_name=='cx110l-bc01' or robot_name=='cx165l_bc01'}">
             <mesh filename="package://khi_description/meshes/${robot_series}/${robot_name}/J6.stl"/>
           </xacro:if>
+          <mesh filename="package://khi_description/meshes/${robot_series}/${robot_name}/J6.stl"/>
         </geometry>
         <xacro:white/>
         <origin xyz="0 0 0" rpy="${radians(l6_rpy_x)} ${radians(l6_rpy_y)} ${radians(l6_rpy_z)}"/>
       </visual>
       <collision>
         <geometry>
-          <xacro:if value="${robot_name=='cx110l-bc01' or robot_name=='cx165l-bc01'}">
+          <xacro:if value="${robot_name=='cx110l-bc01' or robot_name=='cx165l_bc01'}">
             <mesh filename="package://khi_description/meshes/${robot_series}/${robot_name}/J6_hull.stl"/>
           </xacro:if>
+          <mesh filename="package://khi_description/meshes/${robot_series}/${robot_name}/J6_hull.stl"/>
         </geometry>
         <origin xyz="0 0 0" rpy="${radians(l6_rpy_x)} ${radians(l6_rpy_y)} ${radians(l6_rpy_z)}"/>
       </collision>
