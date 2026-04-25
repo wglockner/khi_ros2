@@ -298,7 +298,195 @@ hardware_interface::return_type KhiHardwareInterface::write(
   return hardware_interface::return_type::OK;
 }
 
-// Remaining methods unchanged...
+hardware_interface::CallbackReturn KhiHardwareInterface::on_cleanup(
+  const rclcpp_lifecycle::State & /*previous_state*/)
+{
+  RCLCPP_INFO(rclcpp::get_logger("khi_hardware"), "on_cleanup");
+
+  is_cleaning_up_ = true;
+  is_active_ = false;
+  write_enabled_ = false;
+  if (service_)
+  {
+    service_->stop();
+  }
+  if (publisher_)
+  {
+    publisher_->stop();
+  }
+
+  auto result = driver_->cleanup();
+  is_cleaning_up_ = false;
+  if (result == KhiResultCode::FAILURE) return hardware_interface::CallbackReturn::FAILURE;
+  if (result == KhiResultCode::ERROR) return hardware_interface::CallbackReturn::ERROR;
+
+  RCLCPP_INFO(rclcpp::get_logger("khi_hardware"), "Cleanup successful");
+  return hardware_interface::CallbackReturn::SUCCESS;
 }
+
+hardware_interface::CallbackReturn KhiHardwareInterface::on_shutdown(
+  const rclcpp_lifecycle::State & /*previous_state*/)
+{
+  RCLCPP_INFO(rclcpp::get_logger("khi_hardware"), "on_shutdown");
+
+  is_shutdowning_ = true;
+  is_active_ = false;
+  write_enabled_ = false;
+  if (service_)
+  {
+    service_->stop();
+    service_.reset();
+  }
+  if (publisher_)
+  {
+    publisher_->stop();
+    publisher_.reset();
+  }
+
+  auto result = driver_->shutdown();
+  is_shutdowning_ = false;
+  if (result == KhiResultCode::FAILURE) return hardware_interface::CallbackReturn::FAILURE;
+  if (result == KhiResultCode::ERROR) return hardware_interface::CallbackReturn::ERROR;
+
+  return hardware_interface::CallbackReturn::SUCCESS;
+}
+
+hardware_interface::CallbackReturn KhiHardwareInterface::on_error(
+  const rclcpp_lifecycle::State & /*previous_state*/)
+{
+  RCLCPP_INFO(rclcpp::get_logger("khi_hardware"), "on_error");
+
+  is_handling_error_ = true;
+  is_active_ = false;
+  write_enabled_ = false;
+  if (service_)
+  {
+    service_->stop();
+  }
+  if (publisher_)
+  {
+    publisher_->stop();
+  }
+
+  auto result = driver_->error();
+  is_handling_error_ = false;
+  if (result == KhiResultCode::FAILURE) return hardware_interface::CallbackReturn::FAILURE;
+  if (result == KhiResultCode::ERROR) return hardware_interface::CallbackReturn::ERROR;
+
+  return hardware_interface::CallbackReturn::SUCCESS;
+}
+
+int KhiHardwareInterface::get_arm_no(const hardware_interface::ComponentInfo & joint) const
+{
+  int arm_no = 0;
+  if (joint.parameters.at("arm").find("arm2") != std::string::npos)
+  {
+    arm_no = 1;
+  }
+  return arm_no;
+}
+
+KhiRobotArmData KhiHardwareInterface::get_arm_info(const int target_arm_no) const
+{
+  KhiRobotArmData arm;
+
+  for (const hardware_interface::ComponentInfo & joint : info_.joints)
+  {
+    if (get_arm_no(joint) != target_arm_no)
+    {
+      continue;
+    }
+
+    arm.joint_types.push_back(joint.parameters.at("type"));
+    arm.joint_names.push_back(joint.name);
+    for (const auto & command_interface : joint.command_interfaces)
+    {
+      if (command_interface.name == hardware_interface::HW_IF_POSITION)
+      {
+        arm.max_positions.push_back(std::stod(command_interface.max));
+        arm.min_positions.push_back(std::stod(command_interface.min));
+      }
+      arm.control_modes.push_back(command_interface.name);
+    }
+  }
+
+  arm.joint_num = static_cast<int>(arm.joint_names.size());
+  arm.command_positions.resize(arm.joint_num, 0);
+  arm.old_command_positions.resize(arm.joint_num, 0);
+  arm.state_positions.resize(arm.joint_num, 0);
+  arm.state_velocities.resize(arm.joint_num, 0);
+  arm.state_efforts.resize(arm.joint_num, 0);
+
+  return arm;
+}
+
+void KhiHardwareInterface::create_khi_robot_driver()
+{
+  int max_arm_no = 0;
+  for (const hardware_interface::ComponentInfo & joint : info_.joints)
+  {
+    int arm_no = get_arm_no(joint);
+    if (arm_no > max_arm_no)
+    {
+      max_arm_no = arm_no;
+    }
+  }
+
+  std::vector<KhiRobotArmData> arms;
+  for (int arm_no = 0; arm_no <= max_arm_no; arm_no++)
+  {
+    arms.push_back(get_arm_info(arm_no));
+  }
+
+  KhiRobot robot;
+  robot.controller_no = std::stoi(info_.hardware_parameters.at("controller_no"));
+  robot.name = info_.hardware_parameters.at("robot_name");
+  robot.ip_address = info_.hardware_parameters.at("robot_ip");
+  robot.period = 1000 / std::stoi(info_.hardware_parameters.at("update_rate"));
+  robot.arms = arms;
+
+  KhiPeriodicDataConfig config = {};
+  config.is_actual_current_enabled =
+    (info_.hardware_parameters.at("actual_current") == "True") ||
+    (info_.hardware_parameters.at("actual_current") == "true");
+  config.is_actual_encorder_enabled =
+    (info_.hardware_parameters.at("actual_encorder") == "True") ||
+    (info_.hardware_parameters.at("actual_encorder") == "true");
+  config.is_command_current_enabled =
+    (info_.hardware_parameters.at("command_current") == "True") ||
+    (info_.hardware_parameters.at("command_current") == "true");
+  config.is_command_encorder_enabled =
+    (info_.hardware_parameters.at("command_encorder") == "True") ||
+    (info_.hardware_parameters.at("command_encorder") == "true");
+  config.is_tcp_info_enabled =
+    (info_.hardware_parameters.at("tcp_info") == "True") ||
+    (info_.hardware_parameters.at("tcp_info") == "true");
+  config.is_external_signal_enabled =
+    (info_.hardware_parameters.at("external_signal") == "True") ||
+    (info_.hardware_parameters.at("external_signal") == "true");
+  config.is_internal_signal_enabled =
+    (info_.hardware_parameters.at("internal_signal") == "True") ||
+    (info_.hardware_parameters.at("internal_signal") == "true");
+  config.is_ft_sensor_enabled =
+    (info_.hardware_parameters.at("ft_sensor") == "True") ||
+    (info_.hardware_parameters.at("ft_sensor") == "true");
+
+  const auto is_simulation =
+    (info_.hardware_parameters.at("simulation") == "True") ||
+    (info_.hardware_parameters.at("simulation") == "true");
+
+  if (is_simulation)
+  {
+    driver_ = std::make_shared<KhiMockDriver>(robot, config);
+    RCLCPP_INFO(
+      rclcpp::get_logger("khi_hardware"), "KHI Robot Hardware Interface in simulation mode");
+  }
+  else
+  {
+    driver_ = std::make_shared<KhiKrnxDriver>(robot, config);
+  }
+}
+
+}  // namespace khi_hardware
 #include "pluginlib/class_list_macros.hpp"
 PLUGINLIB_EXPORT_CLASS(khi_hardware::KhiHardwareInterface, hardware_interface::SystemInterface)

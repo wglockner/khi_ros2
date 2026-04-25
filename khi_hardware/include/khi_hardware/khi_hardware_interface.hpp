@@ -94,6 +94,7 @@ private:
   bool is_deactivating_ = false;
   bool is_handling_error_ = false;
   bool is_shutdowning_ = false;
+  bool is_active_ = false;
   bool write_enabled_ = false;
   std::shared_ptr<KhiDriver> driver_;
   std::shared_ptr<KhiPublisher> publisher_;
