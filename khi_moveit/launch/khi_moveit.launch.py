@@ -59,10 +59,13 @@ def generate_launch_description():
             choices=[
                 "rs007l-b001",
                 "rs015x-a001",
+                "rs013n-a001",
                 "rs025n-a001",
                 "rs080n-a001",
                 "bx300l-b001",
                 "bxp135x-a001",
+                "wd003h-f502",
+                "bxp210l-a001",
                 "cx110l-bc01",
                 "cx165l-bc01",
             ],
@@ -121,6 +124,14 @@ def generate_launch_description():
 
     declared_arguments.append(
         DeclareLaunchArgument(
+            "use_gz",
+            default_value="false",
+            description="When using Gazebo Sim, please set use_gz to true.",
+        )
+    )
+
+    declared_arguments.append(
+        DeclareLaunchArgument(
             "robot_controller",
             choices=[
                 "f",
@@ -138,6 +149,7 @@ def launch_setup(context, *args, **kwargs):
     controller_no = LaunchConfiguration("controller_no")
     planner = LaunchConfiguration("planner")
     use_gazebo = LaunchConfiguration("use_gazebo")
+    use_gz = LaunchConfiguration("use_gz")
     use_sim_time = LaunchConfiguration("use_sim_time")
     robot_controller = LaunchConfiguration("robot_controller")
 
@@ -148,6 +160,8 @@ def launch_setup(context, *args, **kwargs):
         robot_series = "bx"
     if "bxp" in str(robot.perform(context)):
         robot_series = "bxp"
+    if "wd" in str(robot.perform(context)):
+        robot_series = "wd"
     if "cx" in str(robot.perform(context)):
         robot_series = "cx"
 
@@ -175,6 +189,8 @@ def launch_setup(context, *args, **kwargs):
             robot_series,
             " use_gazebo:=",
             use_gazebo,
+            " use_gz:=",
+            use_gz,
         ]
     )
     robot_description = {"robot_description": robot_description_content}
@@ -204,11 +220,12 @@ def launch_setup(context, *args, **kwargs):
         )
     }
 
-    robot_description_kinematics = {
-        "robot_description_kinematics": load_yaml("khi_moveit", "config/kinematics.yaml")
-    }
-
-    ompl_planning = load_yaml("khi_moveit", "config/ompl_planning.yaml")
+    if robot_series == "wd":
+        kinematics_yaml = load_yaml("khi_moveit", "config/wd/kinematics.yaml")
+        ompl_planning = load_yaml("khi_moveit", "config/wd/ompl_planning.yaml")
+    else:
+        kinematics_yaml = load_yaml("khi_moveit", "config/kinematics.yaml")
+        ompl_planning = load_yaml("khi_moveit", "config/ompl_planning.yaml")
     planning_pipelines = load_yaml("khi_moveit", "config/planning_pipelines.yaml")
     planning_pipelines["ompl"].update(ompl_planning)
 

@@ -46,10 +46,13 @@ def generate_launch_description():
             choices=[
                 "rs007l-b001",
                 "rs015x-a001",
+                "rs013n-a001",
                 "rs025n-a001",
                 "rs080n-a001",
                 "bx300l-b001",
                 "bxp135x-a001",
+                "wd003h-f502",
+                "bxp210l-a001",
                 "cx110l-bc01",
                 "cx165l_bc01",
             ],
@@ -104,19 +107,21 @@ def generate_launch_description():
     return LaunchDescription(declared_arguments + [OpaqueFunction(function=launch_setup)])
 
 
-def launch_setup(contest, *args, **kwargs):
+def launch_setup(context, *args, **kwargs):
     prefix = LaunchConfiguration("prefix")
     robot = LaunchConfiguration("robot")
     controller_no = LaunchConfiguration("controller_no")
     robot_controller = LaunchConfiguration("robot_controller")
 
     robot_series = ""
-    if "rs" in str(robot.perform(contest)):
+    if "rs" in str(robot.perform(context)):
         robot_series = "rs"
-    if "bx" in str(robot.perform(contest)):
+    if "bx" in str(robot.perform(context)):
         robot_series = "bx"
-    if "bxp" in str(robot.perform(contest)):
+    if "bxp" in str(robot.perform(context)):
         robot_series = "bxp"
+    if "wd" in str(robot.perform(context)):
+        robot_series = "wd"
     if "cx" in str(robot.perform(contest)):
         robot_series = "cx"
 
@@ -162,11 +167,26 @@ def launch_setup(contest, *args, **kwargs):
         ],
     )
 
-    spawn_khi_controller = Node(
-        package="controller_manager",
-        executable="spawner",
-        arguments=["khi_controller", "--controller-manager", "/controller_manager"],
-    )
+    khi_controllers = []
+    if robot_series == "wd":
+        spawn_khi_lower_arm_controller = Node(
+            package="controller_manager",
+            executable="spawner",
+            arguments=["khi_lower_arm_controller", "--controller-manager", "/controller_manager"],
+        )
+        spawn_khi_upper_arm_controller = Node(
+            package="controller_manager",
+            executable="spawner",
+            arguments=["khi_upper_arm_controller", "--controller-manager", "/controller_manager"],
+        )
+        khi_controllers = [spawn_khi_lower_arm_controller, spawn_khi_upper_arm_controller]
+    else:
+        spawn_khi_controller = Node(
+            package="controller_manager",
+            executable="spawner",
+            arguments=["khi_controller", "--controller-manager", "/controller_manager"],
+        )
+        khi_controllers = [spawn_khi_controller]
 
     # gazebo classic
     gazebo = IncludeLaunchDescription(
@@ -186,7 +206,7 @@ def launch_setup(contest, *args, **kwargs):
         robot_state_publisher_node,
         spawn_gazebo,
         spawn_joint_state_broadcaster,
-        spawn_khi_controller,
     ]
+    nodes += khi_controllers
 
     return nodes

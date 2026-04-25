@@ -21,94 +21,126 @@
 
 namespace khi_hardware
 {
-KhiPublisher::~KhiPublisher()
+KhiPublisher::~KhiPublisher() { stop(); }
+
+void KhiPublisher::init(const KhiDriver & driver)
 {
-  should_stop_publisher_ = true;
-  if (event_thread_.joinable())
-  {
-    event_thread_.join();
-  };
-  if (schedule_thread_.joinable())
-  {
-    schedule_thread_.join();
-  };
-  error_info_publisher_.reset();
-  actual_current_publisher_.reset();
-  timer_.reset();
-  node_.reset();
+  std::string node_namespace = "/khi_controller" + std::to_string(driver.get_robot().controller_no);
+  node_ = rclcpp::Node::make_shared("khi_publisher", node_namespace);
+  executor_ = std::make_shared<rclcpp::executors::SingleThreadedExecutor>();
+  executor_->add_node(node_);
 }
 
 void KhiPublisher::start(const KhiDriver & driver)
 {
-  if (node_ == nullptr)
+  should_stop_publisher_.store(false);
+  should_stop_error_reporting_ = false;
+
+  if (!executor_spin_thread_.joinable())
   {
-    std::string node_namespace =
-      "/khi_controller" + std::to_string(driver.get_robot().controller_no);
-    node_ = rclcpp::Node::make_shared("khi_publisher", node_namespace);
+    start_executor();
   }
 
-  auto event = [&]() { publish_on_event(driver); };
+  const auto fault_qos = rclcpp::QoS(rclcpp::KeepLast(MAX_FAULTS)).reliable();
+  error_info_publisher_ =
+    node_->create_publisher<khi_msgs::msg::ErrorInfo>("~/error_info", fault_qos);
+  actual_current_publisher_ =
+    node_->create_publisher<khi_msgs::msg::ActualCurrent>("~/actual_current", fault_qos);
+
+  auto report = [this, &driver]() { report_actual_current(driver); };
+  timer_ = node_->create_wall_timer(
+    std::chrono::microseconds(static_cast<int64_t>(driver.get_robot().period) * 1000), report);
+
+  auto event = [this, &driver]() { publish_on_event(driver); };
   event_thread_ = std::thread(event);
 
-  auto schedule = [&]() { publish_on_schedule(driver); };
-  schedule_thread_ = std::thread(schedule);
+  RCLCPP_INFO(rclcpp::get_logger("khi_hardware"), "KhiPublisher Start");
+}
+
+void KhiPublisher::stop()
+{
+  should_stop_publisher_.store(true);
+  if (timer_)
+  {
+    timer_->cancel();
+  }
+  if (event_thread_.joinable())
+  {
+    event_thread_.join();
+  }
+  stop_executor();
+  timer_.reset();
+  error_info_publisher_.reset();
+  actual_current_publisher_.reset();
+}
+
+void KhiPublisher::start_executor()
+{
+  exit_.store(false);
+  executor_spin_thread_ = std::thread(
+    [this]()
+    {
+      while (!exit_.load())
+      {
+        executor_->spin_once(std::chrono::milliseconds(100));
+      }
+    });
+}
+
+void KhiPublisher::stop_executor()
+{
+  exit_.store(true);
+  if (executor_)
+  {
+    executor_->cancel();
+  }
+  if (executor_spin_thread_.joinable())
+  {
+    executor_spin_thread_.join();
+  }
 }
 
 void KhiPublisher::report_error(const KhiDriver & driver)
 {
+  std::vector<int> error_codes;
+  std::vector<std::string> error_msgs;
+  driver.get_error_info(error_codes, error_msgs);
+
   // Determine if error repoting should be re-enabled.
-  if (should_stop_error_reporting_ && driver.is_error())
+  if (should_stop_error_reporting_ && (error_codes != old_error_codes_))
   {
-    std::vector<int> error_codes;
-    std::vector<std::string> error_msgs;
-    driver.get_error_info(error_codes, error_msgs);
-
-    if (error_codes.size() != old_error_codes_.size())
-    {
-      should_stop_error_reporting_ = false;
-    }
-    else
-    {
-      for (int i = 0; i < static_cast<int>(error_codes.size()); i++)
-      {
-        if (error_codes[i] != old_error_codes_[i])
-        {
-          should_stop_error_reporting_ = false;
-        }
-      }
-    }
-
-    if (!should_stop_error_reporting_)
-    {
-      old_error_codes_.resize(0);
-    }
+    should_stop_error_reporting_ = false;
   }
+  old_error_codes_ = error_codes;
 
-  // Determine if error repoting should be re-enabled.
+  // Report error if error reporting is enabled.
   if (!should_stop_error_reporting_)
   {
-    khi_msgs::msg::ErrorInfo error_info;
-    driver.get_error_info(error_info.error_codes, error_info.error_msgs);
-    if (error_info.error_codes.empty())
+    if (!error_codes.empty())
     {
-      return;
+      khi_msgs::msg::ErrorInfo error_info;
+
+      // Get the current time.
+      rclcpp::Clock ros_clock(RCL_ROS_TIME);
+      const rclcpp::Time now = ros_clock.now();
+
+      // Keep the string-based time for backward compatibility.
+      const auto current_time = static_cast<std::time_t>(now.seconds());
+      std::tm time_info{};
+      localtime_r(&current_time, &time_info);
+      std::ostringstream oss;
+      oss << std::put_time(&time_info, "%Y-%m-%d %H:%M:%S");
+      error_info.time = oss.str();
+
+      error_info.stamp = now;
+      error_info.error_codes = error_codes;
+      error_info.error_msgs = error_msgs;
+
+      error_info_publisher_->publish(error_info);
     }
-
-    // Get the current time.
-    rclcpp::Clock ros_clock(RCL_ROS_TIME);
-    const rclcpp::Time now = ros_clock.now();
-    const auto current_time = static_cast<std::time_t>(now.seconds());
-    std::tm time_info{};
-    localtime_r(&current_time, &time_info);
-    std::ostringstream oss;
-    oss << std::put_time(&time_info, "%Y-%m-%d %H:%M:%S");
-    error_info.time = oss.str();
-
-    error_info_publisher_->publish(error_info);
 
     // Prevent repeated Publishing of error information.
     should_stop_error_reporting_ = true;
-    old_error_codes_ = error_info.error_codes;
   }
 }
 
@@ -118,6 +150,12 @@ void KhiPublisher::report_error(const KhiDriver & driver)
  */
 void KhiPublisher::report_actual_current(const KhiDriver & driver)
 {
+  // Guard: return early if stop() is in progress to avoid using reset publishers.
+  if (should_stop_publisher_.load())
+  {
+    return;
+  }
+
   khi_msgs::msg::ActualCurrent msg;
   bool success = driver.get_actual_current(msg.actual_current);
   if (!success)
@@ -139,53 +177,15 @@ void KhiPublisher::report_actual_current(const KhiDriver & driver)
  */
 void KhiPublisher::publish_on_event(const KhiDriver & driver)
 {
-  const auto fault_qos = rclcpp::QoS(rclcpp::KeepLast(MAX_FAULTS)).reliable();
-  error_info_publisher_ =
-    node_->create_publisher<khi_msgs::msg::ErrorInfo>("~/error_info", fault_qos);
-
   RCLCPP_INFO(rclcpp::get_logger("khi_hardware"), "KhiEventTriggeredPublisher Start");
 
-  while (!should_stop_publisher_)
+  while (!should_stop_publisher_.load())
   {
     report_error(driver);
     std::this_thread::sleep_for(std::chrono::microseconds(EVENT_CHECK_CYCLE));
   }
 
   RCLCPP_INFO(rclcpp::get_logger("khi_hardware"), "KhiEventTriggeredPublisher STOP");
-}
-
-/**
- * @brief Publish periodically
- * @param driver
- * @private
- */
-void KhiPublisher::publish_on_schedule(const KhiDriver & driver)
-{
-  const auto fault_qos = rclcpp::QoS(rclcpp::KeepLast(MAX_FAULTS)).reliable();
-  actual_current_publisher_ =
-    node_->create_publisher<khi_msgs::msg::ActualCurrent>("~/actual_current", fault_qos);
-
-  auto report = [&]() { report_actual_current(driver); };
-  timer_ = node_->create_wall_timer(
-    std::chrono::microseconds(static_cast<int64_t>(driver.get_robot().period) * 1000), report);
-
-  RCLCPP_INFO(rclcpp::get_logger("khi_hardware"), "KhiScheduledPublisher Start");
-
-  rclcpp::executors::SingleThreadedExecutor executor;
-  executor.add_node(node_);
-  std::thread spin_thread([&executor]() { executor.spin(); });
-  while (!should_stop_publisher_)
-  {
-  }
-  executor.cancel();
-
-  // Wait until the thread has completely finished.
-  if (spin_thread.joinable())
-  {
-    spin_thread.join();
-  }
-
-  RCLCPP_INFO(rclcpp::get_logger("khi_hardware"), "KhiScheduledPublisher End");
 }
 
 }  // namespace khi_hardware

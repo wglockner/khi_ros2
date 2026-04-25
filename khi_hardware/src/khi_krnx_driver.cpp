@@ -64,7 +64,10 @@ KhiResultCode KhiKrnxDriver::initialize()
 
 KhiResultCode KhiKrnxDriver::configure()
 {
-  set_periodic_data_config();
+  if (!set_periodic_data_config())
+  {
+    return KhiResultCode::ERROR;
+  }
 
   if (!open())
   {
@@ -121,7 +124,7 @@ KhiResultCode KhiKrnxDriver::configure()
   char msg_buf[KRNX_MSGSIZE];
   exec_monitor_command(
     robot_.controller_no, "ZPATHCONST_CALTIMEREDUCE ON", msg_buf, sizeof(msg_buf), &error_code,
-    true);
+    false);
 
   return KhiResultCode::SUCCESS;
 }
@@ -162,6 +165,12 @@ KhiResultCode KhiKrnxDriver::activate()
     }
   }
 
+  // Reset an error because a warnig may occur after the motor is turned ON.
+  if (!reset_error())
+  {
+    return KhiResultCode::FAILURE;
+  }
+
   // Clear RTC Comp Data
   for (int arm_no = 0; arm_no < static_cast<int>(robot_.arms.size()); arm_no++)
   {
@@ -169,7 +178,8 @@ KhiResultCode KhiKrnxDriver::activate()
     if (return_code != KRNX_NOERROR)
     {
       RCLCPP_ERROR(
-        rclcpp::get_logger("khi_hardware"), "krnx_OldCompClear returned -0x%X", -return_code);
+        rclcpp::get_logger("khi_hardware"), "krnx_OldCompClear returned -0x%X arm_no:%d",
+        -return_code, arm_no + 1);
       return KhiResultCode::FAILURE;
     }
   }
@@ -315,6 +325,31 @@ bool KhiKrnxDriver::read()
     for (int jt = 0; jt < robot_.arms[arm_no].joint_num; jt++)
     {
       robot_.arms[arm_no].state_efforts[jt] = 0;
+    }
+  }
+
+  // Set F/T sensor data
+  if (periodic_data_config_.is_ft_sensor_enabled)
+  {
+    TKrnxRtExtraData data = {};
+    krnx_GetRtCyclicExtraData(robot_.controller_no, &data);
+    if (robot_.ft_sensor.enable_n_nm_output)
+    {
+      robot_.ft_sensor.force_x = data.extra_data[FORCE_X] * robot_.ft_sensor.counter_to_n_ratio;
+      robot_.ft_sensor.force_y = data.extra_data[FORCE_Y] * robot_.ft_sensor.counter_to_n_ratio;
+      robot_.ft_sensor.force_z = data.extra_data[FORCE_Z] * robot_.ft_sensor.counter_to_n_ratio;
+      robot_.ft_sensor.torque_x = data.extra_data[TORQUE_X] * robot_.ft_sensor.counter_to_nm_ratio;
+      robot_.ft_sensor.torque_y = data.extra_data[TORQUE_Y] * robot_.ft_sensor.counter_to_nm_ratio;
+      robot_.ft_sensor.torque_z = data.extra_data[TORQUE_Z] * robot_.ft_sensor.counter_to_nm_ratio;
+    }
+    else
+    {
+      robot_.ft_sensor.force_x = static_cast<double>(data.extra_data[FORCE_X]);
+      robot_.ft_sensor.force_y = static_cast<double>(data.extra_data[FORCE_Y]);
+      robot_.ft_sensor.force_z = static_cast<double>(data.extra_data[FORCE_Z]);
+      robot_.ft_sensor.torque_x = static_cast<double>(data.extra_data[TORQUE_X]);
+      robot_.ft_sensor.torque_y = static_cast<double>(data.extra_data[TORQUE_Y]);
+      robot_.ft_sensor.torque_z = static_cast<double>(data.extra_data[TORQUE_Z]);
     }
   }
 
@@ -596,17 +631,16 @@ bool KhiKrnxDriver::hold(const bool need_log) const
   for (int arm_no = 0; arm_no < static_cast<int>(robot_.arms.size()); arm_no++)
   {
     int error_code = 0;
-    const int return_code = krnx_Hold(robot_.controller_no, arm_no, &error_code);
+    const int return_code = krnx_HoldWithStopWait(robot_.controller_no, arm_no, &error_code);
     if (return_code != KRNX_NOERROR)
     {
       if (need_log)
       {
-        handle_krnx_error("krnx_Hold", return_code, error_code, arm_no);
+        handle_krnx_error("krnx_HoldWithStopWait", return_code, error_code, arm_no);
       }
       return false;
     }
   }
-  rclcpp::sleep_for(std::chrono::seconds(1));
 
   return true;
 }
@@ -637,7 +671,6 @@ bool KhiKrnxDriver::kill_program(const bool need_log) const
  */
 bool KhiKrnxDriver::is_program_running() const
 {
-  bool is_program_running = true;
   for (int arm_no = 0; arm_no < static_cast<int>(robot_.arms.size()); arm_no++)
   {
     TKrnxCurRobotStatus status;
@@ -649,12 +682,12 @@ bool KhiKrnxDriver::is_program_running() const
       return false;
     }
 
-    if (status.cycle_lamp == OFF)
+    if (status.cycle_lamp == ON)
     {
-      is_program_running = false;
+      return true;
     }
   }
-  return is_program_running;
+  return false;
 }
 
 /**
@@ -681,7 +714,8 @@ bool KhiKrnxDriver::reset_error() const
     if (return_code != KRNX_NOERROR)
     {
       RCLCPP_ERROR(
-        rclcpp::get_logger("khi_hardware"), "krnx_GetCurErrorLamp returned -0x%X", -return_code);
+        rclcpp::get_logger("khi_hardware"), "krnx_GetCurErrorLamp returned -0x%X arm_no:%d",
+        -return_code, arm_no + 1);
       return false;
     }
 
@@ -708,34 +742,8 @@ bool KhiKrnxDriver::power_on_motor() const
 {
   // Motor Power ON
   int error_code = 0;
-  char msg_buf[KRNX_MSGSIZE];
-  if (!exec_monitor_command(
-        robot_.controller_no, "ZPOW ON", msg_buf, sizeof(msg_buf), &error_code, true))
-  {
-    RCLCPP_ERROR(rclcpp::get_logger("khi_hardware"), "Cannot turn on motor power.");
-    return false;
-  }
-
-  // Wait until motor_lamp turns ON
-  const int timeout_msec = 3000;
-  const int max_cnt = timeout_msec / robot_.period;
-  bool is_motor_lamp_on = false;
-  for (int cnt = 0; cnt < max_cnt; cnt++)
-  {
-    int motor_lamp = OFF;
-    if (!get_motor_lamp(motor_lamp, 0, true))
-    {
-      return false;
-    }
-    if (motor_lamp == ON)
-    {
-      is_motor_lamp_on = true;
-      break;
-    }
-    rclcpp::sleep_for(std::chrono::milliseconds(static_cast<uint32_t>(robot_.period)));
-  }
-
-  if (!is_motor_lamp_on)
+  const int return_code = krnx_PowerOnMotorWithOnWait(robot_.controller_no, 0, &error_code);
+  if (return_code != KRNX_NOERROR)
   {
     RCLCPP_ERROR(rclcpp::get_logger("khi_hardware"), "Cannot turn on motor power.");
     return false;
@@ -754,9 +762,8 @@ bool KhiKrnxDriver::power_off_motor(const bool need_log) const
 {
   // Motor Power ON
   int error_code = 0;
-  char msg_buf[KRNX_MSGSIZE];
-  if (!exec_monitor_command(
-        robot_.controller_no, "ZPOW OFF", msg_buf, sizeof(msg_buf), &error_code, need_log))
+  const int return_code = krnx_PowerOffMotorWithOffWait(robot_.controller_no, 0, &error_code);
+  if (return_code != KRNX_NOERROR)
   {
     if (need_log)
     {
@@ -765,33 +772,6 @@ bool KhiKrnxDriver::power_off_motor(const bool need_log) const
     return false;
   }
 
-  // Wait until motor_lamp turns OFF
-  const int timeout_msec = 3000;
-  const int max_cnt = timeout_msec / robot_.period;
-  bool is_motor_lamp_off = false;
-  for (int cnt = 0; cnt < max_cnt; cnt++)
-  {
-    int motor_lamp = ON;
-    if (!get_motor_lamp(motor_lamp, 0, need_log))
-    {
-      return false;
-    }
-    if (motor_lamp == OFF)
-    {
-      is_motor_lamp_off = true;
-      break;
-    }
-    rclcpp::sleep_for(std::chrono::milliseconds(static_cast<uint32_t>(robot_.period)));
-  }
-
-  if (!is_motor_lamp_off)
-  {
-    if (need_log)
-    {
-      RCLCPP_ERROR(rclcpp::get_logger("khi_hardware"), "Cannot turn off motor power.");
-    }
-    return false;
-  }
   return true;
 }
 
@@ -849,6 +829,17 @@ bool KhiKrnxDriver::exec_rtc_program() const
       if (timeout_sec_cnt > timeout_sec_th)
       {
         RCLCPP_ERROR(rclcpp::get_logger("khi_hardware"), "Failed to activate: timeout");
+        return false;
+      }
+
+      // Detect errors caused by executing the robot program.
+      if (is_error())
+      {
+        rclcpp::sleep_for(std::chrono::milliseconds(500));  // Wait until the error code is updated.
+        krnx_GetCurErrorInfo(robot_.controller_no, arm_no, &error_code);
+        RCLCPP_ERROR(
+          rclcpp::get_logger("khi_hardware"), "AS ERROR controller_no:%d arm_no:%d error_code:%d",
+          robot_.controller_no, arm_no + 1, error_code);
         return false;
       }
 
@@ -1021,7 +1012,8 @@ void KhiKrnxDriver::report_write_error() const
         (krnx_arm_data_[arm_no].status[jt] & KRNX_POS_UPPER_LIMIT_ERR) ||
         (krnx_arm_data_[arm_no].status[jt] & KRNX_POS_LOWER_LIMIT_ERR))
       {
-        std::string msg = "A commanded position exceeding the operating range was sent. ";
+        std::string msg = "A commanded position exceeding the operating range was sent [arm_no:" +
+                          std::to_string(arm_no + 1) + "].";
         msg += ("( JT" + std::to_string(jt + 1));
         msg += (" cmd:" + std::to_string(cmd));
         msg += is_prismatic ? "[m]" : "[deg]";
@@ -1038,7 +1030,8 @@ void KhiKrnxDriver::report_write_error() const
         spd *= is_prismatic ? MM2M : RAD2DEG;
         spd_limit *= is_prismatic ? MM2M : RAD2DEG;
 
-        std::string msg = "A commanded position exceeding the speed limit was sent. ";
+        std::string msg = "A commanded position exceeding the speed limit was sent [arm_no:" +
+                          std::to_string(arm_no + 1) + "].";
         msg += ("( JT" + std::to_string(jt + 1));
         msg += (" cmd:" + std::to_string(cmd));
         msg += is_prismatic ? "[m]" : "[deg]";
@@ -1113,6 +1106,15 @@ bool KhiKrnxDriver::load_rtc_program() const
     fprintf(fp, "  GOTO 1\n");
     fprintf(fp, "  RTC_SW 1: OFF\n");
     fprintf(fp, ".END\n");
+    if (static_cast<int>(robot_.arms.size()) == 2)
+    {
+      fprintf(fp, ".PROGRAM rb_rtc2()\n");
+      fprintf(fp, "  RTC_SW 2: ON\n");
+      fprintf(fp, "1 RTC_CTL\n");
+      fprintf(fp, "  GOTO 1\n");
+      fprintf(fp, "  RTC_SW 2: OFF\n");
+      fprintf(fp, ".END\n");
+    }
     fclose(fp);
   }
   else
@@ -1612,15 +1614,15 @@ void KhiKrnxDriver::monitor_robot_health()
   static unsigned int cnt = 0;
   for (int arm_no = 0; arm_no < static_cast<int>(robot_.arms.size()); arm_no++)
   {
-    TKrnxCurMotionDataEx data[KRNX_MAX_ROBOT];
-    if (!get_curmotion_data_ex(robot_.controller_no, arm_no, &data[arm_no]))
+    TKrnxCurMotionDataEx data;
+    if (!get_curmotion_data_ex(robot_.controller_no, arm_no, &data))
     {
       continue;
     }
 
     for (int jt = 0; jt < robot_.arms[arm_no].joint_num; jt++)
     {
-      is_saturated[arm_no][jt][cnt] = (data->cur_sat[jt] >= 1.0);
+      is_saturated[arm_no][jt][cnt] = (data.cur_sat[jt] >= 1.0);
 
       int err_cnt = 0;
       for (auto is_sat : is_saturated[arm_no][jt])
@@ -1634,9 +1636,9 @@ void KhiKrnxDriver::monitor_robot_health()
       {
         RCLCPP_WARN(
           rclcpp::get_logger("khi_hardware"),
-          "The current is saturated. Please reduce the acceleration or change the motion. [JT%d "
-          "%f]",
-          jt + 1, data->cur_sat[jt]);
+          "The current is saturated. Please reduce the acceleration or change the motion. "
+          "[arm_no:%d JT%d %f]",
+          arm_no + 1, jt + 1, data.cur_sat[jt]);
         for (auto & is_sat : is_saturated[arm_no][jt])
         {
           is_sat = false;
@@ -1701,7 +1703,7 @@ void KhiKrnxDriver::handle_krnx_error(
 /**
  * @brief Set the type of information that the robot periodically retrieves.
  */
-void KhiKrnxDriver::set_periodic_data_config() const
+bool KhiKrnxDriver::set_periodic_data_config() const
 {
   u_int16_t kind = KRNX_CYC_KIND_ANGLE | KRNX_CYC_KIND_ANGLE_REF | KRNX_CYC_KIND_ERROR |
                    KRNX_CYC_KIND_CURRENT_SAT | KRNX_CYC_KIND_ANGLE_VEL | KRNX_CYC_KIND_ROBOT_STATUS;
@@ -1735,8 +1737,68 @@ void KhiKrnxDriver::set_periodic_data_config() const
   }
   if (periodic_data_config_.is_ft_sensor_enabled)
   {
+    if (robot_.name.find("wd") != std::string::npos)
+    {
+      RCLCPP_ERROR(
+        rclcpp::get_logger("khi_hardware"),
+        "duAro2 does not support the F/T sensor streaming function.");
+      return false;
+    }
     kind |= KRNX_CYC_KIND_EXTRA_DATA;
   }
   krnx_SetRtCyclicDataKind(robot_.controller_no, kind);
+
+  return true;
+}
+
+/**
+ * @brief Executes the RDT command SetSoftwareBias on the ATI F/T sensor connected to the robot
+ * controller.
+ * @param req request
+ * @param resp responce
+ * @memberof KhiKrnxDriver
+ */
+void KhiKrnxDriver::set_ati_software_bias_srv_cb(
+  const khi_msgs::srv::SetATISoftwareBias::Request::SharedPtr & /*req*/,
+  const khi_msgs::srv::SetATISoftwareBias::Response::SharedPtr & resp) const
+{
+  resp->success = true;
+
+  int error_code = 0;
+  int return_code = krnx_SetATISoftwareBias(robot_.controller_no, &error_code);
+
+  if (return_code != KRNX_NOERROR)
+  {
+    std::stringstream ss;
+    ss << std::hex << -return_code;
+    resp->krnx_err = "-0x" + ss.str();
+    resp->success = false;
+  }
+
+  if (error_code != 0)
+  {
+    resp->error_code = error_code;
+    std::string cmd = "TYPE $ERROR(" + std::to_string(error_code) + ")";
+    char msg[KRNX_MSGSIZE];
+    exec_monitor_command(robot_.controller_no, cmd.c_str(), msg, sizeof(msg), &error_code, true);
+    resp->error_msg = convert_to_utf8(msg);
+    resp->success = false;
+  }
+}
+
+/**
+ * @brief Switch the output unit of the values obtained from the FT sensor (Counter [default] ⇔ N,
+ * Nm)
+ * @param req request
+ * @param resp responce
+ * @memberof KhiKrnxDriver
+ */
+void KhiKrnxDriver::change_ft_output_mode_srv_cb(
+  const khi_msgs::srv::ChangeFTOutputMode::Request::SharedPtr & req,
+  const khi_msgs::srv::ChangeFTOutputMode::Response::SharedPtr & /*resp*/)
+{
+  robot_.ft_sensor.enable_n_nm_output = req->enable_n_nm_output;
+  robot_.ft_sensor.counter_to_n_ratio = req->counter_to_n_ratio;
+  robot_.ft_sensor.counter_to_nm_ratio = req->counter_to_nm_ratio;
 }
 }  // namespace khi_hardware

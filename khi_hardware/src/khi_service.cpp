@@ -19,24 +19,35 @@
 
 namespace khi_hardware
 {
-KhiService::~KhiService() { should_stop_service_ = true; }
+KhiService::~KhiService()
+{
+  stop();
+  exit_.store(true);
+  if (spin_thread_.joinable())
+  {
+    spin_thread_.join();
+  }
+}
+
+void KhiService::init(const KhiDriver & driver)
+{
+  std::string node_namespace = "/khi_controller" + std::to_string(driver.get_robot().controller_no);
+  node_ = rclcpp::Node::make_shared("khi_service", node_namespace);
+  executor_ = std::make_shared<rclcpp::executors::SingleThreadedExecutor>();
+  executor_->add_node(node_);
+  exit_.store(false);
+  spin_thread_ = std::thread(
+    [this]()
+    {
+      while (!exit_.load())
+      {
+        executor_->spin_once(std::chrono::milliseconds(100));
+      }
+    });
+}
 
 void KhiService::start(KhiDriver & driver)
 {
-  auto loop = [&]() { service_loop(driver); };
-  std::thread spin_thread(loop);
-  spin_thread.detach();
-}
-
-void KhiService::service_loop(KhiDriver & driver)
-{
-  if (node_ == nullptr)
-  {
-    std::string node_namespace =
-      "/khi_controller" + std::to_string(driver.get_robot().controller_no);
-    node_ = rclcpp::Node::make_shared("khi_service", node_namespace);
-  }
-
   auto get_signal = [&driver](
                       const khi_msgs::srv::GetSignal::Request::SharedPtr & req,
                       const khi_msgs::srv::GetSignal::Response::SharedPtr & resp)
@@ -70,15 +81,32 @@ void KhiService::service_loop(KhiDriver & driver)
   set_timeout_service_ =
     node_->create_service<khi_msgs::srv::SetTimeout>("~/set_timeout", set_timeout);
 
+  auto set_soft_bias = [&driver](
+                         const khi_msgs::srv::SetATISoftwareBias::Request::SharedPtr & req,
+                         const khi_msgs::srv::SetATISoftwareBias::Response::SharedPtr & resp)
+  { driver.set_ati_software_bias_srv_cb(req, resp); };
+  set_ati_software_bias_service_ = node_->create_service<khi_msgs::srv::SetATISoftwareBias>(
+    "~/set_ati_software_bias", set_soft_bias);
+
+  auto change_ft_output_mode =
+    [&driver](
+      const khi_msgs::srv::ChangeFTOutputMode::Request::SharedPtr & req,
+      const khi_msgs::srv::ChangeFTOutputMode::Response::SharedPtr & resp)
+  { driver.change_ft_output_mode_srv_cb(req, resp); };
+  change_ft_output_mode_service_ = node_->create_service<khi_msgs::srv::ChangeFTOutputMode>(
+    "~/change_ft_output_mode", change_ft_output_mode);
+
   RCLCPP_INFO(rclcpp::get_logger("khi_hardware"), "KhiService Start");
+}
 
-  rclcpp::executors::SingleThreadedExecutor exec;
-  exec.add_node(node_);
-  while (!should_stop_service_)
-  {
-    exec.spin_some();
-  }
-
-  RCLCPP_INFO(rclcpp::get_logger("khi_hardware"), "KhiService STOP");
+void KhiService::stop()
+{
+  get_signal_service_.reset();
+  set_signal_service_.reset();
+  khi_cmd_service_.reset();
+  reset_error_service_.reset();
+  set_timeout_service_.reset();
+  set_ati_software_bias_service_.reset();
+  change_ft_output_mode_service_.reset();
 }
 }  // namespace khi_hardware
