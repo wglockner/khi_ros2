@@ -53,6 +53,8 @@ def generate_launch_description():
                 "bxp135x-a001",
                 "wd003h-f502",
                 "bxp210l-a001",
+                "cx110l-bc01",
+                "cx165l_bc01",
             ],
             description="robot name",
         )
@@ -120,6 +122,8 @@ def launch_setup(context, *args, **kwargs):
         robot_series = "bxp"
     if "wd" in str(robot.perform(context)):
         robot_series = "wd"
+    if "cx" in str(robot.perform(contest)):
+        robot_series = "cx"
 
     # Get URDF via xacro
     robot_description_content = Command(

@@ -50,6 +50,8 @@ def generate_launch_description():
                 "bxp135x-a001",
                 "wd003h-f502",
                 "bxp210l-a001",
+                "cx110l-bc01",
+                "cx165l_bc01",
             ],
             description="robot name",
         )
@@ -74,7 +76,7 @@ def generate_launch_description():
     declared_arguments.append(
         DeclareLaunchArgument(
             "robot_controller",
-            choices=["f", "f_duaro"],
+            choices=["f", "f_duaro", "e"],
             default_value="f",
         )
     )
@@ -93,7 +95,7 @@ def generate_launch_description():
     declared_arguments.append(
         DeclareLaunchArgument(
             "robot_ip",
-            default_value="192.168.0.2",
+            default_value="192.168.2.23",
             description="ip address",
         )
     )
@@ -220,6 +222,8 @@ def launch_setup(context, *args, **kwargs):
         robot_series = "bxp"
     if "wd" in str(robot.perform(context)):
         robot_series = "wd"
+    if "cx" in str(robot.perform(contest)):
+        robot_series = "cx"
 
     # Get URDF via xacro
     robot_description_content = Command(

@@ -66,6 +66,8 @@ def generate_launch_description():
                 "bxp135x-a001",
                 "wd003h-f502",
                 "bxp210l-a001",
+                "cx110l-bc01",
+                "cx165l-bc01",
             ],
             description="robot name",
         )
@@ -160,6 +162,8 @@ def launch_setup(context, *args, **kwargs):
         robot_series = "bxp"
     if "wd" in str(robot.perform(context)):
         robot_series = "wd"
+    if "cx" in str(robot.perform(context)):
+        robot_series = "cx"
 
     # planning_context
     robot_description_content = Command(
@@ -260,7 +264,7 @@ def launch_setup(context, *args, **kwargs):
         parameters=[
             robot_description,
             robot_description_semantic,
-            kinematics_yaml,
+            robot_description_kinematics,
             planning_pipelines,
             trajectory_execution,
             moveit_controllers,
@@ -284,7 +288,7 @@ def launch_setup(context, *args, **kwargs):
             robot_description,
             robot_description_semantic,
             planning_pipelines,
-            kinematics_yaml,
+            robot_description_kinematics,
             robot_description_planning,
             {"default_planning_pipeline": planner},
         ],
