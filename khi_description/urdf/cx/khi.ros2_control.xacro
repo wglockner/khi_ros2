@@ -6,6 +6,7 @@
     robot_name
     simulation
     use_gazebo
+    use_gz
     robot_ip
     robot_controller
     controller_no

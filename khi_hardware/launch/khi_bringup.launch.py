@@ -95,7 +95,7 @@ def generate_launch_description():
     declared_arguments.append(
         DeclareLaunchArgument(
             "robot_ip",
-            default_value="192.168.2.23",
+            default_value="192.168.1.23",
             description="ip address",
         )
     )
@@ -222,7 +222,7 @@ def launch_setup(context, *args, **kwargs):
         robot_series = "bxp"
     if "wd" in str(robot.perform(context)):
         robot_series = "wd"
-    if "cx" in str(robot.perform(contest)):
+    if "cx" in str(robot.perform(context)):
         robot_series = "cx"
 
     # Get URDF via xacro
