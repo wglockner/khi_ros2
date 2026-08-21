@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include <algorithm>
 #include <climits>
 
 #include "hardware_interface/types/hardware_interface_type_values.hpp"
@@ -290,7 +291,8 @@ KhiResultCode KhiKrnxDriver::error()
 bool KhiKrnxDriver::read()
 {
   TKrnxCurMotionDataEx motion_cur[KRNX_MAX_ROBOT];
-  for (int arm_no = 0; arm_no < static_cast<int>(robot_.arms.size()); arm_no++)
+  const int arm_count = static_cast<int>(robot_.arms.size());
+  for (int arm_no = 0; arm_no < arm_count; arm_no++)
   {
     if (arm_no < 0)
     {
@@ -299,6 +301,100 @@ bool KhiKrnxDriver::read()
     if (!get_curmotion_data_ex(robot_.controller_no, arm_no, &motion_cur[arm_no]))
     {
       return false;
+    }
+  }
+
+  // ── Frozen-feedback detection and bridge ─────────────────────────────
+  // krnx_GetCurMotionDataEx keeps returning KRNX_NOERROR with its last
+  // received data when the robot->PC cyclic stream dies, so every consumer
+  // downstream sees a robot that "stopped" while the real arm keeps
+  // executing (the PC->robot direction is independent and kept working
+  // every time this was observed — trigger: laser emission onset; the
+  // stream stayed dead past the end of emission). The tell that separates
+  // a dead stream from a genuinely stationary arm: the data is BIT-
+  // identical across many cycles while the COMMANDED position walks away
+  // from it. A servo following its commands cannot do that — the
+  // controller would be in deviation fault, which is its own alarm.
+  //
+  // While frozen, the COMMANDED positions are substituted into the state
+  // interfaces: the arm demonstrably tracks its commands 1:1 on this cell,
+  // so command-echo is an accurate open-loop estimate — and a tracking
+  // estimate is what keeps /joint_states, execute-progress and the process
+  // gates (laser, WIRE) functioning through emission. Loudly logged in
+  // both directions; recovery is automatic when the stream revives.
+  {
+    bool identical = !last_motion_.empty();
+    if (identical)
+    {
+      for (int a = 0; a < arm_count && identical; a++)
+      {
+        identical = std::memcmp(&motion_cur[a], &last_motion_[static_cast<size_t>(a)],
+                                sizeof(TKrnxCurMotionDataEx)) == 0;
+      }
+    }
+    last_motion_.assign(motion_cur, motion_cur + arm_count);
+
+    if (identical)
+    {
+      identical_motion_count_++;
+    }
+    else
+    {
+      if (feedback_frozen_)
+      {
+        const double dead = (rclcpp::Clock(RCL_ROS_TIME).now() - feedback_frozen_since_).seconds();
+        RCLCPP_WARN(
+          rclcpp::get_logger("khi_hardware"),
+          "Actual-position feedback stream RECOVERED after %.1f s. State interfaces are "
+          "measured again.", dead);
+      }
+      feedback_frozen_ = false;
+      identical_motion_count_ = 0;
+    }
+
+    // ~1 s of bit-identical data at any plausible update rate...
+    if (!feedback_frozen_ && identical_motion_count_ > 100)
+    {
+      // ...AND the command has left the frozen position behind.
+      double max_dev = 0.0;
+      for (int a = 0; a < arm_count; a++)
+      {
+        for (int jt = 0; jt < robot_.arms[a].joint_num; jt++)
+        {
+          double frozen = motion_cur[a].ang[jt];
+          if (robot_.arms[a].joint_types[jt] == jt_type_prismatic_)
+          {
+            frozen *= MM2M;
+          }
+          max_dev = std::max(max_dev, std::abs(robot_.arms[a].command_positions[jt] - frozen));
+        }
+      }
+      if (max_dev > 0.01)
+      {
+        feedback_frozen_ = true;
+        feedback_frozen_since_ = rclcpp::Clock(RCL_ROS_TIME).now();
+        RCLCPP_ERROR(
+          rclcpp::get_logger("khi_hardware"),
+          "Actual-position feedback stream is FROZEN: %d bit-identical samples while the "
+          "commanded position moved %.4f rad/m away. The robot->PC cyclic stream is dead "
+          "(observed trigger on this cell: laser emission onset — suspect EMI into the "
+          "KRNX feedback path). Substituting COMMANDED positions into the state "
+          "interfaces so tracking survives; feedback is OPEN-LOOP until the stream "
+          "recovers.", identical_motion_count_, max_dev);
+      }
+    }
+  }
+
+  for (int arm_no = 0; arm_no < arm_count; arm_no++)
+  {
+    if (feedback_frozen_)
+    {
+      for (int jt = 0; jt < robot_.arms[arm_no].joint_num; jt++)
+      {
+        robot_.arms[arm_no].state_positions[jt] = robot_.arms[arm_no].command_positions[jt];
+        robot_.arms[arm_no].state_velocities[jt] = 0.0;
+      }
+      continue;
     }
 
     // Set Position
@@ -380,9 +476,24 @@ bool KhiKrnxDriver::write()
     }
   }
 
-  // Due to slight discrepancies in the cycles of the robot controller and ros2_control, the
-  // position command buffer accumulates. Therefore, to prevent the buffer from overflowing, the
-  // sending of position commands is skipped when the robot is stationary.
+  // Due to slight discrepancies in the cycles of the robot controller and
+  // ros2_control, the position command buffer accumulates; sending is
+  // skipped when the robot is stationary to bleed that off.
+  //
+  // The skip is deliberately gated on the command being CONSTANT, exactly as
+  // the original driver had it. A revision here skipped on queue depth
+  // alone, reasoning that a full queue is just future lag — and that was
+  // wrong on this cell in a worse direction: the robot's RTC consumption
+  // PAUSES transiently mid-run (cause unresolved; the backlog monitor in
+  // monitor_robot_health now measures it), and dropping samples during such
+  // a pause discards the remainder of the trajectory. Three consecutive
+  // beads ended with the arm silently parked partway along the path, servo
+  // healthy, controller reporting success. Buffering through a pause delays
+  // the motion and catches up; dropping through one amputates it. The
+  // catastrophic-backlog case that motivated the revision (production =
+  // 5x consumption) was a config bug — controller_manager update_rate
+  // disagreeing with the hardware update_rate parameter — fixed at the
+  // source and now loudly reported by the monitor if it ever returns.
   bool should_decrease_buffer = true;
   for (int arm_no = 0; arm_no < static_cast<int>(robot_.arms.size()); arm_no++)
   {
@@ -405,6 +516,28 @@ bool KhiKrnxDriver::write()
     {
       RCLCPP_ERROR(rclcpp::get_logger("khi_hardware"), "krnx_PrimeRtcCompData -0x%X", -return_code);
       is_primed = false;
+    }
+    // The per-joint status output was never inspected: a comp the controller
+    // refuses (step limit, RTC state) dies here silently while write()
+    // reports success — a refused stream is indistinguishable from a healthy
+    // one in every log this driver emits.
+    for (int jt = 0; jt < robot_.arms[arm_no].joint_num; jt++)
+    {
+      if (krnx_arm_data_[arm_no].status[jt] != 0)
+      {
+        static rclcpp::Time last_status_log(0, 0, RCL_ROS_TIME);
+        auto now = rclcpp::Clock(RCL_ROS_TIME).now();
+        if ((now - last_status_log).seconds() > 1.0)
+        {
+          RCLCPP_ERROR(
+            rclcpp::get_logger("khi_hardware"),
+            "RTC comp REFUSED: arm %d joint %d status 0x%X (comp %.5f). The controller is "
+            "rejecting compensation data — the arm will hold position while commands stream.",
+            arm_no + 1, jt + 1, krnx_arm_data_[arm_no].status[jt],
+            krnx_arm_data_[arm_no].comp[jt]);
+          last_status_log = now;
+        }
+      }
     }
   }
 
@@ -1585,10 +1718,22 @@ bool KhiKrnxDriver::is_position_command_constant()
  */
 void KhiKrnxDriver::monitor_robot_health()
 {
-  // Display a warning about the number of buffed position commands.
-  for (int arm_no = 0; arm_no < static_cast<int>(robot_.arms.size()); arm_no++)
+  // Command-queue backlog. Each buffered point is one RTC cycle the arm runs
+  // BEHIND the commands being written now — backlog is lag, and lag under a
+  // gated process means the laser fires against a timeline the arm has not
+  // reached. The original version of this check needed 1000 consecutive
+  // over-threshold samples of a per-50-reads monitor before saying anything
+  // (100+ seconds), and the second arm's iteration reset the count the first
+  // arm had just accumulated; a runaway backlog was effectively invisible.
+  // Take the worst arm, warn within a few seconds, and say what it means.
   {
-    if (krnx_GetRtcBufferLength(robot_.controller_no, arm_no) > KRNX_BUFFER_SIZE_THRESH)
+    int max_backlog = 0;
+    for (int arm_no = 0; arm_no < static_cast<int>(robot_.arms.size()); arm_no++)
+    {
+      max_backlog =
+        std::max(max_backlog, krnx_GetRtcBufferLength(robot_.controller_no, arm_no));
+    }
+    if (max_backlog > KRNX_BUFFER_SIZE_THRESH)
     {
       rtc_buffer_thresh_exceed_cnt_ += 1;
     }
@@ -1597,13 +1742,62 @@ void KhiKrnxDriver::monitor_robot_health()
       rtc_buffer_thresh_exceed_cnt_ = 0;
     }
 
-    if (rtc_buffer_thresh_exceed_cnt_ > KRNX_BUFFER_WARNING_INTERVAL)
+    // monitor_robot_health runs every 50 read() cycles; ~4 hits is a couple
+    // of seconds of sustained backlog at any plausible update rate.
+    if (rtc_buffer_thresh_exceed_cnt_ >= 4)
     {
       RCLCPP_WARN(
         rclcpp::get_logger("khi_hardware"),
-        "The number of buffered position commands is too high. Please pause the robot and then "
-        "resumed its operation.");
+        "RTC command queue backlog: %d points (~%.1f s of lag at the %d ms cycle). The arm is "
+        "running this far behind the commanded timeline. Usual cause: controller_manager "
+        "update_rate does not match the khi_hardware update_rate parameter.",
+        max_backlog, max_backlog * robot_.period / 1000.0, robot_.period);
       rtc_buffer_thresh_exceed_cnt_ = 0;
+    }
+  }
+
+  // Robot state transitions. Measured on this cell: the arm parked mid-
+  // trajectory at the instant laser emission started, with nothing ROS-side
+  // reporting anything — the controller streamed to completion and declared
+  // success over a robot that had stopped. The robot knows WHY it stops
+  // (protective stop, system emergency, hold, monitor-speed clamp, servo
+  // refusing commands); log every change so the cause carries a timestamp
+  // that can be laid next to the process log.
+  {
+    static bool have_prev[KRNX_MAX_ROBOT] = {};
+    static TKrnxCurRobotStatus prev[KRNX_MAX_ROBOT] = {};
+    for (int arm_no = 0; arm_no < static_cast<int>(robot_.arms.size()); arm_no++)
+    {
+      TKrnxCurRobotStatus st;
+      if (krnx_GetCurRobotStatus(robot_.controller_no, arm_no, &st) != KRNX_NOERROR)
+      {
+        continue;
+      }
+      if (have_prev[arm_no])
+      {
+        const auto& pv = prev[arm_no];
+        auto changed = [&](short a, short b, const char * name) {
+          if (a != b)
+            RCLCPP_WARN(
+              rclcpp::get_logger("khi_hardware"),
+              "Robot status change (arm %d): %s %d -> %d", arm_no + 1, name, a, b);
+        };
+        changed(pv.motor_lamp, st.motor_lamp, "motor_lamp");
+        changed(pv.run_lamp, st.run_lamp, "run_lamp");
+        changed(pv.emergency, st.emergency, "emergency");
+        changed(pv.system_emergency, st.system_emergency, "system_emergency");
+        changed(pv.protective_stop, st.protective_stop, "protective_stop");
+        changed(pv.rtc_active, st.rtc_active, "rtc_active");
+        // rb_program_run deliberately not compared: on this controller it
+        // reads as a fast-churning counter, and change-logging it emitted a
+        // WARN every sample.
+        changed(pv.monitor_speed, st.monitor_speed, "monitor_speed");
+        changed(pv.check_speed, st.check_speed, "check_speed");
+        changed(pv.enverr_warm, st.enverr_warm, "enverr_warm (deviation abnormal)");
+        changed(pv.can_send_cmd_pos, st.can_send_cmd_pos, "can_send_cmd_pos");
+      }
+      prev[arm_no] = st;
+      have_prev[arm_no] = true;
     }
   }
 
