@@ -149,6 +149,18 @@ private:
   bool is_korean_;
   int cmd_constant_cnt_ = 0;
   int rtc_buffer_thresh_exceed_cnt_ = KRNX_BUFFER_WARNING_INTERVAL;
+  // Feedback-freeze detection (see read()). krnx_GetCurMotionDataEx returns
+  // KRNX_NOERROR with its last-received data when the robot->PC cyclic
+  // stream dies, so a dead stream is indistinguishable from a stationary
+  // arm unless the commanded position is walking away from the frozen
+  // actual. Observed on this cell: the stream dies at the instant of laser
+  // emission onset and stays dead past the end of emission, while the
+  // PC->robot command direction keeps working and the arm completes the
+  // trajectory invisibly.
+  std::vector<TKrnxCurMotionDataEx> last_motion_;
+  int identical_motion_count_ = 0;
+  bool feedback_frozen_ = false;
+  rclcpp::Time feedback_frozen_since_{0, 0, RCL_ROS_TIME};
   std::vector<KrnxArmData> krnx_arm_data_{};
 };
 
