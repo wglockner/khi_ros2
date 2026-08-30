@@ -88,7 +88,7 @@ public:
 private:
   int get_arm_no(const hardware_interface::ComponentInfo & joint) const;
   KhiRobotArmData get_arm_info(const int target_arm_no) const;
-  void create_khi_robot_driver();
+  bool create_khi_robot_driver();
 
   bool is_cleaning_up_ = false;
   bool is_deactivating_ = false;
@@ -96,6 +96,18 @@ private:
   bool is_shutdowning_ = false;
   bool is_active_ = false;
   bool write_enabled_ = false;
+  // ~1 s of consecutive driver read failures at 100 Hz before the loop
+  // reports ERROR instead of serving stale state.
+  static constexpr int READ_FAILURE_ESCALATION_COUNT = 100;
+  // Per-instance counters and log throttles: function-statics would be shared
+  // between hardware components in a multi-robot controller_manager.
+  int health_monitor_counter_ = 0;
+  int consecutive_read_failures_ = 0;
+  rclcpp::Time read_comm_loss_log_time_{0, 0, RCL_ROS_TIME};
+  rclcpp::Time read_error_log_time_{0, 0, RCL_ROS_TIME};
+  rclcpp::Time write_comm_loss_log_time_{0, 0, RCL_ROS_TIME};
+  rclcpp::Time write_deactivate_log_time_{0, 0, RCL_ROS_TIME};
+  rclcpp::Time write_error_log_time_{0, 0, RCL_ROS_TIME};
   std::shared_ptr<KhiDriver> driver_;
   std::shared_ptr<KhiPublisher> publisher_;
   std::shared_ptr<KhiService> service_;

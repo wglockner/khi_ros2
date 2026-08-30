@@ -15,6 +15,7 @@
 #ifndef KHI_HARDWARE__KHI_KRNX_DRIVER_HPP_
 #define KHI_HARDWARE__KHI_KRNX_DRIVER_HPP_
 
+#include <cstdint>
 #include <string>
 #include <utility>
 #include <vector>
@@ -143,12 +144,23 @@ private:
     TORQUE_Z = 8,
   };
 
-  int seq_no_ = 0;
+  // krnx_SendRtcCompData takes an unsigned short; keep the counter the same
+  // width so the wraparound is well-defined instead of signed-int overflow.
+  uint16_t seq_no_ = 0;
   bool is_japanese_;
   bool is_chinese_;
   bool is_korean_;
   int cmd_constant_cnt_ = 0;
   int rtc_buffer_thresh_exceed_cnt_ = KRNX_BUFFER_WARNING_INTERVAL;
+  // Monitoring state lives on the instance, NOT in function-statics: two KHI
+  // hardware components in one controller_manager (dual-robot workcells) each
+  // index their own arm 0, and shared statics would interleave their data.
+  rclcpp::Time rtc_refuse_log_time_{0, 0, RCL_ROS_TIME};
+  bool status_have_prev_[KRNX_MAX_ROBOT] = {};
+  TKrnxCurRobotStatus status_prev_[KRNX_MAX_ROBOT] = {};
+  static constexpr int SATURATION_WINDOW = 100;
+  bool is_saturated_[KRNX_MAX_ROBOT][KRNX_MAXAXES][SATURATION_WINDOW] = {};
+  unsigned int saturation_cnt_ = 0;
   // Feedback-freeze detection (see read()). krnx_GetCurMotionDataEx returns
   // KRNX_NOERROR with its last-received data when the robot->PC cyclic
   // stream dies, so a dead stream is indistinguishable from a stationary

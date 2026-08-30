@@ -25,7 +25,14 @@
 
 namespace khi_hardware
 {
-KhiHardwareInterface::~KhiHardwareInterface() { driver_->error(); }
+KhiHardwareInterface::~KhiHardwareInterface()
+{
+  // driver_ is null when on_init failed before create_khi_robot_driver().
+  if (driver_)
+  {
+    driver_->error();
+  }
+}
 
 hardware_interface::CallbackReturn KhiHardwareInterface::on_init(
   const hardware_interface::HardwareComponentInterfaceParams & params)
@@ -88,7 +95,10 @@ hardware_interface::CallbackReturn KhiHardwareInterface::on_init(
     }
   }
 
-  create_khi_robot_driver();
+  if (!create_khi_robot_driver())
+  {
+    return hardware_interface::CallbackReturn::ERROR;
+  }
 
   auto result = driver_->initialize();
   if (result == KhiResultCode::FAILURE) return hardware_interface::CallbackReturn::FAILURE;
@@ -202,37 +212,49 @@ hardware_interface::return_type KhiHardwareInterface::read(
       return hardware_interface::return_type::OK;
     }
 
-    static rclcpp::Time last_error_time(0, 0, RCL_ROS_TIME);
     auto now = rclcpp::Clock(RCL_ROS_TIME).now();
 
-    if ((now - last_error_time).seconds() > 1.0)
+    if ((now - read_comm_loss_log_time_).seconds() > 1.0)
     {
       RCLCPP_ERROR(
         rclcpp::get_logger("khi_hardware"),
         "Communication with the robot controller has been lost.");
-      last_error_time = now;
+      read_comm_loss_log_time_ = now;
     }
 
     return hardware_interface::return_type::ERROR;
   }
 
-  static int health_monitor_counter = 0;
-  if (++health_monitor_counter >= 50)
+  if (++health_monitor_counter_ >= 50)
   {
     driver_->monitor_robot_health();
-    health_monitor_counter = 0;
+    health_monitor_counter_ = 0;
   }
 
   if (!driver_->read())
   {
-    static rclcpp::Time last_read_error_time(0, 0, RCL_ROS_TIME);
     auto now = rclcpp::Clock(RCL_ROS_TIME).now();
 
-    if ((now - last_read_error_time).seconds() > 1.0)
+    if ((now - read_error_log_time_).seconds() > 1.0)
     {
       RCLCPP_ERROR(rclcpp::get_logger("khi_hardware"), "read err");
-      last_read_error_time = now;
+      read_error_log_time_ = now;
     }
+
+    // A single failed cycle keeps the last state and moves on, but a sustained
+    // failure means the state interfaces are silently stale — escalate.
+    if (++consecutive_read_failures_ >= READ_FAILURE_ESCALATION_COUNT)
+    {
+      RCLCPP_ERROR(
+        rclcpp::get_logger("khi_hardware"),
+        "%d consecutive read failures; state interfaces are stale. Reporting ERROR.",
+        consecutive_read_failures_);
+      return hardware_interface::return_type::ERROR;
+    }
+  }
+  else
+  {
+    consecutive_read_failures_ = 0;
   }
 
   return hardware_interface::return_type::OK;
@@ -253,15 +275,14 @@ hardware_interface::return_type KhiHardwareInterface::write(
 
   if (!driver_->is_communicating())
   {
-    static rclcpp::Time last_error_time(0, 0, RCL_ROS_TIME);
     auto now = rclcpp::Clock(RCL_ROS_TIME).now();
 
-    if ((now - last_error_time).seconds() > 1.0)
+    if ((now - write_comm_loss_log_time_).seconds() > 1.0)
     {
       RCLCPP_ERROR(
         rclcpp::get_logger("khi_hardware"),
         "Communication with the robot controller has been lost.");
-      last_error_time = now;
+      write_comm_loss_log_time_ = now;
     }
 
     return hardware_interface::return_type::ERROR;
@@ -269,13 +290,12 @@ hardware_interface::return_type KhiHardwareInterface::write(
 
   if (!driver_->is_writable())
   {
-    static rclcpp::Time last_deactivate_log_time(0, 0, RCL_ROS_TIME);
     auto now = rclcpp::Clock(RCL_ROS_TIME).now();
 
-    if ((now - last_deactivate_log_time).seconds() > 1.0)
+    if ((now - write_deactivate_log_time_).seconds() > 1.0)
     {
       RCLCPP_INFO(rclcpp::get_logger("khi_hardware"), "deactivate");
-      last_deactivate_log_time = now;
+      write_deactivate_log_time_ = now;
     }
 
     return hardware_interface::return_type::DEACTIVATE;
@@ -283,13 +303,12 @@ hardware_interface::return_type KhiHardwareInterface::write(
 
   if (!driver_->write())
   {
-    static rclcpp::Time last_write_error_time(0, 0, RCL_ROS_TIME);
     auto now = rclcpp::Clock(RCL_ROS_TIME).now();
 
-    if ((now - last_write_error_time).seconds() > 1.0)
+    if ((now - write_error_log_time_).seconds() > 1.0)
     {
       RCLCPP_ERROR(rclcpp::get_logger("khi_hardware"), "write err");
-      last_write_error_time = now;
+      write_error_log_time_ = now;
     }
 
     return hardware_interface::return_type::DEACTIVATE;
@@ -420,7 +439,8 @@ KhiRobotArmData KhiHardwareInterface::get_arm_info(const int target_arm_no) cons
   return arm;
 }
 
-void KhiHardwareInterface::create_khi_robot_driver()
+bool KhiHardwareInterface::create_khi_robot_driver()
+try
 {
   int max_arm_no = 0;
   for (const hardware_interface::ComponentInfo & joint : info_.joints)
@@ -438,11 +458,23 @@ void KhiHardwareInterface::create_khi_robot_driver()
     arms.push_back(get_arm_info(arm_no));
   }
 
+  const int update_rate = std::stoi(info_.hardware_parameters.at("update_rate"));
+  if (update_rate <= 0 || update_rate > 1000 || 1000 % update_rate != 0)
+  {
+    RCLCPP_FATAL(
+      rclcpp::get_logger("khi_hardware"),
+      "update_rate parameter is %d Hz; it must be a positive divisor of 1000 (e.g. 100, 125, "
+      "250, 500). A non-divisor rate silently truncates the RTC cycle time and desynchronizes "
+      "the controller from ros2_control.",
+      update_rate);
+    return false;
+  }
+
   KhiRobot robot;
   robot.controller_no = std::stoi(info_.hardware_parameters.at("controller_no"));
   robot.name = info_.hardware_parameters.at("robot_name");
   robot.ip_address = info_.hardware_parameters.at("robot_ip");
-  robot.period = 1000 / std::stoi(info_.hardware_parameters.at("update_rate"));
+  robot.period = 1000 / update_rate;
   robot.arms = arms;
 
   KhiPeriodicDataConfig config = {};
@@ -485,6 +517,20 @@ void KhiHardwareInterface::create_khi_robot_driver()
   {
     driver_ = std::make_shared<KhiKrnxDriver>(robot, config);
   }
+
+  return true;
+}
+catch (const std::exception & e)
+{
+  // .at()/stoi/stod on hardware or joint parameters: a missing or non-numeric
+  // entry lands here instead of throwing through controller_manager.
+  RCLCPP_FATAL(
+    rclcpp::get_logger("khi_hardware"),
+    "Invalid or missing hardware configuration in the URDF <ros2_control> block: %s. Check "
+    "the hardware parameters (robot_name, robot_ip, controller_no, update_rate, simulation, "
+    "the periodic-data flags) and each joint's 'arm'/'type' params and position min/max.",
+    e.what());
+  return false;
 }
 
 }  // namespace khi_hardware

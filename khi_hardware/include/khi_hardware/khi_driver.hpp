@@ -16,6 +16,7 @@
 #define KHI_HARDWARE__KHI_DRIVER_HPP_
 
 #include <math.h>
+#include <mutex>
 #include <string>
 #include <utility>
 #include <vector>
@@ -101,6 +102,9 @@ protected:
 
   KhiRobot robot_;
   KhiPeriodicDataConfig periodic_data_config_;
+  // Guards robot_.ft_sensor configuration: change_ft_output_mode_srv_cb writes
+  // it from the service thread while read() consumes it on the control thread.
+  mutable std::mutex ft_config_mutex_;
 };
 
 }  // namespace khi_hardware

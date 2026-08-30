@@ -70,7 +70,17 @@ void KhiService::start(KhiDriver & driver)
   auto reset_error = [&driver](
                        const khi_msgs::srv::ResetError::Request::SharedPtr & req,
                        const khi_msgs::srv::ResetError::Response::SharedPtr & resp)
-  { driver.reset_error_srv_cb(req, resp, 0); };
+  {
+    // Reset every arm, not just arm 0 (duAro has two).
+    bool all_ok = true;
+    const int arm_count = static_cast<int>(driver.get_robot().arms.size());
+    for (int arm_no = 0; arm_no < arm_count; arm_no++)
+    {
+      driver.reset_error_srv_cb(req, resp, arm_no);
+      all_ok = all_ok && resp->success;
+    }
+    resp->success = all_ok;
+  };
   reset_error_service_ =
     node_->create_service<khi_msgs::srv::ResetError>("~/reset_error", reset_error);
 

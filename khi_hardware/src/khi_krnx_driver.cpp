@@ -185,6 +185,20 @@ KhiResultCode KhiKrnxDriver::activate()
     }
   }
 
+  // reset_home_position() trusts the motion readout unconditionally. If the
+  // feedback stream is still frozen from a previous run, the captured home
+  // would be a stale pose and every subsequent comp would be computed against
+  // a position the arm is not at — refuse instead.
+  if (feedback_frozen_)
+  {
+    RCLCPP_ERROR(
+      rclcpp::get_logger("khi_hardware"),
+      "Cannot activate: the actual-position feedback stream is still FROZEN, so the home "
+      "position cannot be trusted. Verify the KRNX link (power-cycle the controller if "
+      "needed) and activate again once feedback has recovered.");
+    return KhiResultCode::FAILURE;
+  }
+
   if (!reset_home_position())
   {
     RCLCPP_ERROR(rclcpp::get_logger("khi_hardware"), "Failed to reset home position");
@@ -290,7 +304,9 @@ KhiResultCode KhiKrnxDriver::error()
  */
 bool KhiKrnxDriver::read()
 {
-  TKrnxCurMotionDataEx motion_cur[KRNX_MAX_ROBOT];
+  // Zero-initialized so the freeze-detection memcmp below never compares
+  // leftover stack bytes if the library ever short-writes the struct.
+  TKrnxCurMotionDataEx motion_cur[KRNX_MAX_ROBOT] = {};
   const int arm_count = static_cast<int>(robot_.arms.size());
   for (int arm_no = 0; arm_no < arm_count; arm_no++)
   {
@@ -352,8 +368,11 @@ bool KhiKrnxDriver::read()
       identical_motion_count_ = 0;
     }
 
-    // ~1 s of bit-identical data at any plausible update rate...
-    if (!feedback_frozen_ && identical_motion_count_ > 100)
+    // ~1 s of bit-identical data, scaled to the actual update rate (a fixed
+    // cycle count would shrink to 0.2 s at 500 Hz and trip on stream jitter).
+    const int freeze_cycles =
+      (robot_.period > 0.0) ? static_cast<int>(1000.0 / robot_.period) : 100;
+    if (!feedback_frozen_ && identical_motion_count_ > freeze_cycles)
     {
       // ...AND the command has left the frozen position behind.
       double max_dev = 0.0;
@@ -381,6 +400,13 @@ bool KhiKrnxDriver::read()
           "KRNX feedback path). Substituting COMMANDED positions into the state "
           "interfaces so tracking survives; feedback is OPEN-LOOP until the stream "
           "recovers.", identical_motion_count_, max_dev);
+        if (periodic_data_config_.is_ft_sensor_enabled)
+        {
+          RCLCPP_WARN(
+            rclcpp::get_logger("khi_hardware"),
+            "The F/T sensor rides the same cyclic stream: force/torque readings are frozen "
+            "too. Treat them as STALE until the stream recovers.");
+        }
       }
     }
   }
@@ -389,10 +415,18 @@ bool KhiKrnxDriver::read()
   {
     if (feedback_frozen_)
     {
+      // Velocity derived from the command delta keeps /joint_states coherent
+      // (position sweeping with velocity pinned at zero is not a state any
+      // consumer differentiating the stream can make sense of).
+      const double period_sec = robot_.period * MSEC2SEC;
       for (int jt = 0; jt < robot_.arms[arm_no].joint_num; jt++)
       {
         robot_.arms[arm_no].state_positions[jt] = robot_.arms[arm_no].command_positions[jt];
-        robot_.arms[arm_no].state_velocities[jt] = 0.0;
+        robot_.arms[arm_no].state_velocities[jt] =
+          (period_sec > 0.0) ? (robot_.arms[arm_no].command_positions[jt] -
+                                robot_.arms[arm_no].old_command_positions[jt]) /
+                                 period_sec
+                             : 0.0;
       }
       continue;
     }
@@ -429,6 +463,9 @@ bool KhiKrnxDriver::read()
   {
     TKrnxRtExtraData data = {};
     krnx_GetRtCyclicExtraData(robot_.controller_no, &data);
+    // change_ft_output_mode_srv_cb rewrites this config from the service
+    // thread; take the same lock it does.
+    std::lock_guard<std::mutex> lock(ft_config_mutex_);
     if (robot_.ft_sensor.enable_n_nm_output)
     {
       robot_.ft_sensor.force_x = data.extra_data[FORCE_X] * robot_.ft_sensor.counter_to_n_ratio;
@@ -525,9 +562,8 @@ bool KhiKrnxDriver::write()
     {
       if (krnx_arm_data_[arm_no].status[jt] != 0)
       {
-        static rclcpp::Time last_status_log(0, 0, RCL_ROS_TIME);
         auto now = rclcpp::Clock(RCL_ROS_TIME).now();
-        if ((now - last_status_log).seconds() > 1.0)
+        if ((now - rtc_refuse_log_time_).seconds() > 1.0)
         {
           RCLCPP_ERROR(
             rclcpp::get_logger("khi_hardware"),
@@ -535,7 +571,7 @@ bool KhiKrnxDriver::write()
             "rejecting compensation data — the arm will hold position while commands stream.",
             arm_no + 1, jt + 1, krnx_arm_data_[arm_no].status[jt],
             krnx_arm_data_[arm_no].comp[jt]);
-          last_status_log = now;
+          rtc_refuse_log_time_ = now;
         }
       }
     }
@@ -708,18 +744,20 @@ bool KhiKrnxDriver::exec_monitor_command(
  */
 bool KhiKrnxDriver::has_met_ros_requirements() const
 {
-  TKrnxCurRobotStatus status;
   bool is_ok = true;
 
   for (int arm_no = 0; arm_no < static_cast<int>(robot_.arms.size()); arm_no++)
   {
     /* Condition Check */
+    TKrnxCurRobotStatus status = {};
     const int return_code = krnx_GetCurRobotStatus(robot_.controller_no, arm_no, &status);
     if (return_code != KRNX_NOERROR)
     {
       RCLCPP_ERROR(
         rclcpp::get_logger("khi_hardware"), "krnx_GetCurRobotStatus returned -0x%X", -return_code);
       is_ok = false;
+      // status holds nothing meaningful on failure; don't evaluate it.
+      continue;
     }
 
     if (status.repeat_lamp == OFF)
@@ -954,11 +992,14 @@ bool KhiKrnxDriver::exec_rtc_program() const
 
     // Wait until rtc_active becomes ON
     double timeout_sec_cnt = 0;
+    // Floor the sleep at 1 ms: a sub-millisecond period would otherwise
+    // sleep(0) and never advance the timeout counter (infinite busy loop).
+    const auto sleep_ms = std::max<int64_t>(1, static_cast<int64_t>(robot_.period));
     while (true)
     {
-      rclcpp::sleep_for(std::chrono::milliseconds(static_cast<uint32_t>(robot_.period)));
+      rclcpp::sleep_for(std::chrono::milliseconds(sleep_ms));
 
-      timeout_sec_cnt += robot_.period * MSEC2SEC;
+      timeout_sec_cnt += static_cast<double>(sleep_ms) * MSEC2SEC;
       if (timeout_sec_cnt > timeout_sec_th)
       {
         RCLCPP_ERROR(rclcpp::get_logger("khi_hardware"), "Failed to activate: timeout");
@@ -1067,6 +1108,16 @@ bool KhiKrnxDriver::is_configuration_valid() const
     }
     int jt_num = static_cast<int>(jt_num_tmp);
 
+    if (robot_.arms[arm_no].joint_num > jt_num)
+    {
+      // Commanding more joints than the controller has is never recoverable.
+      RCLCPP_ERROR(
+        rclcpp::get_logger("khi_hardware"),
+        "ROS is configured with %d joints but AS reports only %d (arm_no:%d). Fix the URDF "
+        "before activating.",
+        robot_.arms[arm_no].joint_num, jt_num, arm_no + 1);
+      return false;
+    }
     if (robot_.arms[arm_no].joint_num != jt_num)
     {
       RCLCPP_WARN(
@@ -1219,6 +1270,10 @@ bool KhiKrnxDriver::load_rtc_program() const
   char file_path[path_size] = {0};
   char tmplt[] = "/tmp/khi_robot-rtc_param-XXXXXX";
   auto fd = mkstemp(tmplt);
+  if (fd < 0)
+  {
+    return report_error();
+  }
   FILE * fp = fdopen(fd, "w");
   if (fp != nullptr)
   {
@@ -1229,6 +1284,8 @@ bool KhiKrnxDriver::load_rtc_program() const
     const ssize_t rsize = readlink(fd_path, file_path, sizeof(file_path));
     if (rsize < 0)
     {
+      fclose(fp);
+      unlink(tmplt);
       return report_error();
     }
 
@@ -1252,6 +1309,8 @@ bool KhiKrnxDriver::load_rtc_program() const
   }
   else
   {
+    ::close(fd);
+    unlink(tmplt);
     return report_error();
   }
 
@@ -1260,6 +1319,7 @@ bool KhiKrnxDriver::load_rtc_program() const
   {
     RCLCPP_ERROR(
       rclcpp::get_logger("khi_hardware"), "krnx_Load returned -0x%X %s", -return_code, file_path);
+    unlink(file_path);
     return report_error();
   }
 
@@ -1353,6 +1413,13 @@ void KhiKrnxDriver::set_signal_srv_cb(
   resp->success = false;
 
   // Check request
+  if (req->signal_numbers.empty())
+  {
+    RCLCPP_ERROR(
+      rclcpp::get_logger("khi_hardware"),
+      "set_signal called with no signal numbers; nothing to do.");
+    return;
+  }
   if (req->signal_numbers.size() != req->is_on.size())
   {
     RCLCPP_ERROR(
@@ -1414,6 +1481,7 @@ void KhiKrnxDriver::exec_khi_command_srv_cb(
 
   if (error_code != 0)
   {
+    resp->success = false;
     resp->error_code = error_code;
     std::string cmd = "TYPE $ERROR(" + std::to_string(error_code) + ")";
     char msg[KRNX_MSGSIZE];
@@ -1641,9 +1709,23 @@ bool KhiKrnxDriver::chk_language()
   {
     return false;
   }
-  is_japanese_ = (std::stoi(std::string(msg)) == 1);
-  is_chinese_ = (std::stoi(std::string(msg)) == 6);
-  is_korean_ = (std::stoi(std::string(msg)) == 7);
+  int language = 0;
+  try
+  {
+    language = std::stoi(std::string(msg));
+  }
+  catch (const std::exception &)
+  {
+    RCLCPP_ERROR(
+      rclcpp::get_logger("khi_hardware"),
+      "Unexpected reply to 'TYPE SYSDATA(LANGUAGE)': '%s'. Cannot determine the controller "
+      "language setting.",
+      msg);
+    return false;
+  }
+  is_japanese_ = (language == 1);
+  is_chinese_ = (language == 6);
+  is_korean_ = (language == 7);
 
   return true;
 }
@@ -1748,7 +1830,7 @@ void KhiKrnxDriver::monitor_robot_health()
     {
       RCLCPP_WARN(
         rclcpp::get_logger("khi_hardware"),
-        "RTC command queue backlog: %d points (~%.1f s of lag at the %d ms cycle). The arm is "
+        "RTC command queue backlog: %d points (~%.1f s of lag at the %.0f ms cycle). The arm is "
         "running this far behind the commanded timeline. Usual cause: controller_manager "
         "update_rate does not match the khi_hardware update_rate parameter.",
         max_backlog, max_backlog * robot_.period / 1000.0, robot_.period);
@@ -1764,18 +1846,16 @@ void KhiKrnxDriver::monitor_robot_health()
   // refusing commands); log every change so the cause carries a timestamp
   // that can be laid next to the process log.
   {
-    static bool have_prev[KRNX_MAX_ROBOT] = {};
-    static TKrnxCurRobotStatus prev[KRNX_MAX_ROBOT] = {};
     for (int arm_no = 0; arm_no < static_cast<int>(robot_.arms.size()); arm_no++)
     {
-      TKrnxCurRobotStatus st;
+      TKrnxCurRobotStatus st = {};
       if (krnx_GetCurRobotStatus(robot_.controller_no, arm_no, &st) != KRNX_NOERROR)
       {
         continue;
       }
-      if (have_prev[arm_no])
+      if (status_have_prev_[arm_no])
       {
-        const auto& pv = prev[arm_no];
+        const auto& pv = status_prev_[arm_no];
         auto changed = [&](short a, short b, const char * name) {
           if (a != b)
             RCLCPP_WARN(
@@ -1796,19 +1876,16 @@ void KhiKrnxDriver::monitor_robot_health()
         changed(pv.enverr_warm, st.enverr_warm, "enverr_warm (deviation abnormal)");
         changed(pv.can_send_cmd_pos, st.can_send_cmd_pos, "can_send_cmd_pos");
       }
-      prev[arm_no] = st;
-      have_prev[arm_no] = true;
+      status_prev_[arm_no] = st;
+      status_have_prev_[arm_no] = true;
     }
   }
 
   // Display a warning if current saturation is detected multiple times in a short duration.
-  constexpr int duration = 100;
   constexpr int err_thresh = 3;
-  static bool is_saturated[KRNX_MAX_ROBOT][KRNX_MAXAXES][duration] = {};
-  static unsigned int cnt = 0;
   for (int arm_no = 0; arm_no < static_cast<int>(robot_.arms.size()); arm_no++)
   {
-    TKrnxCurMotionDataEx data;
+    TKrnxCurMotionDataEx data = {};
     if (!get_curmotion_data_ex(robot_.controller_no, arm_no, &data))
     {
       continue;
@@ -1816,10 +1893,10 @@ void KhiKrnxDriver::monitor_robot_health()
 
     for (int jt = 0; jt < robot_.arms[arm_no].joint_num; jt++)
     {
-      is_saturated[arm_no][jt][cnt] = (data.cur_sat[jt] >= 1.0);
+      is_saturated_[arm_no][jt][saturation_cnt_] = (data.cur_sat[jt] >= 1.0);
 
       int err_cnt = 0;
-      for (auto is_sat : is_saturated[arm_no][jt])
+      for (auto is_sat : is_saturated_[arm_no][jt])
       {
         if (is_sat)
         {
@@ -1833,15 +1910,15 @@ void KhiKrnxDriver::monitor_robot_health()
           "The current is saturated. Please reduce the acceleration or change the motion. "
           "[arm_no:%d JT%d %f]",
           arm_no + 1, jt + 1, data.cur_sat[jt]);
-        for (auto & is_sat : is_saturated[arm_no][jt])
+        for (auto & is_sat : is_saturated_[arm_no][jt])
         {
           is_sat = false;
         }
       }
     }
   }
-  cnt++;
-  cnt %= duration;
+  saturation_cnt_++;
+  saturation_cnt_ %= SATURATION_WINDOW;
 }
 
 /**
@@ -1991,6 +2068,9 @@ void KhiKrnxDriver::change_ft_output_mode_srv_cb(
   const khi_msgs::srv::ChangeFTOutputMode::Request::SharedPtr & req,
   const khi_msgs::srv::ChangeFTOutputMode::Response::SharedPtr & /*resp*/)
 {
+  // This runs on the service thread while read() consumes the config on the
+  // control thread; the lock keeps the three fields changing atomically.
+  std::lock_guard<std::mutex> lock(ft_config_mutex_);
   robot_.ft_sensor.enable_n_nm_output = req->enable_n_nm_output;
   robot_.ft_sensor.counter_to_n_ratio = req->counter_to_n_ratio;
   robot_.ft_sensor.counter_to_nm_ratio = req->counter_to_nm_ratio;
