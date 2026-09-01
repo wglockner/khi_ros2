@@ -779,18 +779,31 @@ bool KhiKrnxDriver::has_met_ros_requirements() const
         rclcpp::get_logger("khi_hardware"), "Please change Robot Controller's RUN/HOLD to RUN");
       is_ok = false;
     }
-    if ((status.emergency == ON) || (status.system_emergency == ON))
+    if (status.emergency == ON)
     {
       RCLCPP_ERROR(
         rclcpp::get_logger("khi_hardware"), "Please change Robot Controller's EMERGENCY to OFF");
       is_ok = false;
     }
+    // system_emergency and protective_stop sit at the tail of
+    // TKrnxCurRobotStatus and are not populated by this controller's firmware:
+    // KRNX DEV 3.4.0 returns uninitialized bytes there, random per session
+    // (verified 2026-09-01 against the CX110L at 192.168.1.24 — five fresh
+    // sessions read clear/clear/ON/clear/ON with the robot untouched, while
+    // emergency/repeat/run/teach-lock stayed stable). Warn only; a real
+    // protective stop is still enforced by the controller itself, which
+    // refuses motor power and motion until it is cleared.
+    if (status.system_emergency == ON)
+    {
+      RCLCPP_WARN(
+        rclcpp::get_logger("khi_hardware"),
+        "system_emergency reads ON; ignored (field unsupported by this controller firmware)");
+    }
     if (status.protective_stop == ON)
     {
-      RCLCPP_ERROR(
+      RCLCPP_WARN(
         rclcpp::get_logger("khi_hardware"),
-        "Please change Robot Controller's Protective Stop to OFF");
-      is_ok = false;
+        "protective_stop reads ON; ignored (field unsupported by this controller firmware)");
     }
   }
 
