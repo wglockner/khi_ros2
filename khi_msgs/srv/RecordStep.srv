@@ -1,0 +1,7 @@
+# krnx_RecOneStep (KRNX API Manual 4.24): write one step of a program on the controller.
+string program
+int32 step_num
+string step_data   # program instruction
+bool insert        # true: insert the step, false: overwrite it
+---
+KrnxResult result

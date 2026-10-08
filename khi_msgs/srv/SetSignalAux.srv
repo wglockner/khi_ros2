@@ -1,0 +1,5 @@
+# krnx_SetSignal (KRNX API Manual 4.17)
+int32 signal_number   # DO 1-960, internal 2001-2960
+bool is_on
+---
+KrnxResult result

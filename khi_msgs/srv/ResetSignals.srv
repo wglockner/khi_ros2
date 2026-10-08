@@ -1,0 +1,3 @@
+# krnx_Reset (KRNX API Manual 4.18): turns OFF ALL external output signals.
+---
+KrnxResult result

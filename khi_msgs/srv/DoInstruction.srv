@@ -1,0 +1,7 @@
+# krnx_Do (KRNX API Manual 4.22): execute one AS program instruction.
+#
+# WARNING: motion instructions (JMOVE, LMOVE, HOME, ...) MOVE THE ROBOT.
+int32 arm_no   # 0-based
+string instruction
+---
+KrnxResult result

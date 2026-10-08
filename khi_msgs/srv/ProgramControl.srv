@@ -1,0 +1,26 @@
+# Robot / PC program control (KRNX API Manual 4.1-4.5, 4.7-4.11, 4.23).
+#
+# WARNING: while ros2_control is active the arm is driven by the driver's own RTC program
+# (rb_rtc1/rb_rtc2). HOLD/ABORT/KILL on that robot stops the motion stream; EXECUTE/PRIME of
+# another robot program is refused by AS while it runs.
+uint8 TARGET_ROBOT = 0
+uint8 TARGET_PC = 1
+
+uint8 ACTION_EXECUTE = 0   # krnx_Execute / krnx_PcExecute
+uint8 ACTION_PRIME = 1     # krnx_Prime (robot only); follow with ACTION_CONTINUE
+uint8 ACTION_HOLD = 2      # krnx_Hold (robot only): immediate, motor power stays on
+uint8 ACTION_CONTINUE = 3  # krnx_Continue / krnx_PcContinue
+uint8 ACTION_ABORT = 4     # krnx_Abort / krnx_PcAbort: stops after the current step
+uint8 ACTION_KILL = 5      # krnx_Kill / krnx_PcKill: initialize the program stack
+uint8 ACTION_END = 6       # krnx_PcEnd (PC only): stop at the next STOP instruction
+
+uint8 target
+int32 number        # TARGET_ROBOT: arm_no (0-based). TARGET_PC: PC program number (1-3)
+uint8 action
+string program      # EXECUTE / PRIME
+int32 exec_num      # EXECUTE / PRIME. negative: unlimited, 0: once, 1-32768: count
+int32 step_num      # EXECUTE / PRIME. 0: from the first executable step
+bool next_step      # CONTINUE. false: from the stopped step, true: from the next step
+bool create         # PRIME. true: create the program if it does not exist
+---
+KrnxResult result

@@ -1,0 +1,5 @@
+# krnx_GetPanelInfo (KRNX API Manual 5.5). Synchronous, about 20 ms.
+int32 arm_no   # 0-based
+---
+KrnxResult result
+PanelInfo panel

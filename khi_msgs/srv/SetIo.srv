@@ -1,0 +1,11 @@
+# krnx_IoSetDO / krnx_IoSetDI: masked bulk write of signals. NOT covered by KRNX API Manual
+# DEV 2.3.0: requires the hardware parameter enable_undocumented_krnx_api=true.
+# Use ~/set_signal or ~/set_signal_aux for documented signal writes.
+uint8 KIND_DO = 0
+uint8 KIND_DI = 1   # forces INPUT signal states (presumed simulation/debug use)
+
+uint8 kind
+uint8[] data   # bit layout as in GetIoInfo
+uint8[] mask   # same length as data; only bits set here are written
+---
+KrnxResult result

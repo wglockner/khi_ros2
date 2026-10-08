@@ -1,0 +1,15 @@
+# krnx_BufferSendF / W / B: typed data exchange with AS programs. NOT covered by KRNX API
+# Manual DEV 2.3.0: requires the hardware parameter enable_undocumented_krnx_api=true.
+uint8 TYPE_FLOAT = 0
+uint8 TYPE_WORD = 1
+uint8 TYPE_BYTE = 2
+
+int32 buffer_no
+int16 request_code
+uint8 type
+float32[] float_data
+int16[] word_data
+uint8[] byte_data
+int32 timeout
+---
+KrnxResult result

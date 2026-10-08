@@ -1,0 +1,6 @@
+# krnx_SetRtcErrorFlag (KRNX API Manual 6.10): a negative error_flag raises AS error
+# "(E1520) RTC)KRNX set RTC Error." and STOPS THE ROBOT. Cleared by an AS error reset.
+int32 arm_no   # 0-based
+int32 error_flag
+---
+KrnxResult result

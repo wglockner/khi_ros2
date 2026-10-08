@@ -1,0 +1,6 @@
+# krnx_LoadEx (no progress callback): load a program/data file from the PC running the driver into the controller.
+# Refused by the controller with KRNX_E_CANNOTLOAD_MOTORON (-0x1033) while motor power is on
+# and KRNX_E_PROGRAM_RUNNING (-0x1034) while a program runs.
+string filename   # path on the driver host
+---
+KrnxResult result

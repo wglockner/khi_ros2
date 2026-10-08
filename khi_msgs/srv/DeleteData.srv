@@ -1,0 +1,11 @@
+# krnx_Delete (KRNX API Manual 4.19): delete programs / variables from controller memory.
+uint16 TYPE_PROGRAM = 1    # program
+uint16 TYPE_LOCATION = 2    # position information
+uint16 TYPE_REAL = 4   # real variable
+uint16 TYPE_STRING = 8    # string variable
+uint16 TYPE_INTEGER = 16   # integer variable
+
+string element_name   # "*" deletes every element of element_type
+int32 element_type    # OR of TYPE_* (the QUAL_* values of krnx.h). 0: the program plus subroutines/variables only it uses
+---
+KrnxResult result

@@ -15,7 +15,10 @@
 #ifndef KHI_HARDWARE__KHI_KRNX_DRIVER_HPP_
 #define KHI_HARDWARE__KHI_KRNX_DRIVER_HPP_
 
+#include <atomic>
 #include <cstdint>
+#include <memory>
+#include <mutex>
 #include <string>
 #include <utility>
 #include <vector>
@@ -25,6 +28,7 @@
 #include "khi_hardware/khi_result_code.hpp"
 #include "khi_hardware/krnx.h"
 #include "khi_msgs/msg/error_info.hpp"
+#include "khi_msgs/msg/krnx_result.hpp"
 #include "khi_msgs/srv/change_ft_output_mode.hpp"
 #include "khi_msgs/srv/exec_khi_command.hpp"
 #include "khi_msgs/srv/get_signal.hpp"
@@ -90,8 +94,17 @@ public:
   bool get_actual_current(std::vector<float> & actual_current) const override;
   bool is_communicating() const override;
   void monitor_robot_health() override;
+  // The KRNX API surface as services; implemented in khi_krnx_api_services.cpp.
+  void create_extended_services(
+    rclcpp::Node & node, std::vector<rclcpp::ServiceBase::SharedPtr> & services) override;
 
 private:
+  // Helpers of the extended services (khi_krnx_api_services.cpp).
+  void fill_krnx_result(khi_msgs::msg::KrnxResult & result, int krnx_code, int as_err_code) const;
+  bool is_arm_valid(khi_msgs::msg::KrnxResult & result, int arm_no) const;
+  bool is_undocumented_api_enabled(khi_msgs::msg::KrnxResult & result, const char * api) const;
+  bool get_current_joints(khi_msgs::msg::KrnxResult & result, int arm_no, float * joint) const;
+
   bool reset_home_position();
   bool chk_language();
   bool is_position_command_constant();
@@ -117,6 +130,7 @@ private:
     bool need_log) const;
   void convert_error_code(std::string & str_error_code, int error_code) const;
   std::string convert_to_utf8(const char * input) const;
+  void log_robot_status(const char * context) const;
   void handle_krnx_error(
     const std::string & krnx_api, const int krnx_return_code, const int as_err_code,
     const int arm_no) const;
@@ -130,6 +144,12 @@ private:
   static constexpr int KRNX_BUFFER_SIZE_THRESH = 20;
   static constexpr int KRNX_BUFFER_WARNING_INTERVAL = 1000;
   static constexpr int KRNX_AUX_TIMEOUT = 3000;  // [ms]
+  // power_on_motor(): "ZPOW ON" attempts, how long each waits for the motor
+  // lamp, and the lamp poll period. 5 x 3 s covers the controller's own
+  // post-motor-OFF re-engage window without stalling a real refusal for long.
+  static constexpr int MOTOR_ON_ATTEMPTS = 5;
+  static constexpr int MOTOR_ON_WAIT_MS = 3000;
+  static constexpr int MOTOR_ON_POLL_MS = 100;
   static constexpr int KRNX_POS_UPPER_LIMIT_ERR = 0x01;
   static constexpr int KRNX_POS_LOWER_LIMIT_ERR = 0x02;
   static constexpr int KRNX_SPD_LIMIT_ERR = 0x04;
@@ -147,6 +167,11 @@ private:
   // krnx_SendRtcCompData takes an unsigned short; keep the counter the same
   // width so the wraparound is well-defined instead of signed-int overflow.
   uint16_t seq_no_ = 0;
+  // krnx_SendRtcCompData (write(), control thread) and krnx_SetRtcErrorFlag (service thread)
+  // share the RT cyclic channel and its sequence number; this serializes send + increment.
+  std::mutex rtc_send_mutex_;
+  // True between a successful activate() and deactivate(): the RTC stream is live.
+  std::atomic<bool> is_active_{false};
   bool is_japanese_;
   bool is_chinese_;
   bool is_korean_;

@@ -1,0 +1,14 @@
+# Joint motion data from the selectable KRNX source.
+uint8 SOURCE_CYCLIC = 0   # krnx_GetCurMotionData (RT cyclic cache, <0.5 ms)   [manual 6.3]
+uint8 SOURCE_AS = 1       # krnx_GetMotionInfo (synchronous AS-API)           [undocumented]
+uint8 SOURCE_AS_CUR = 2   # krnx_GetCurMotionInfo                             [undocumented]
+uint8 SOURCE_AS_EX = 3    # krnx_GetMotionInfoEx(data_type)                   [undocumented]
+uint8 SOURCE_AS_SYNC = 4  # krnx_GetMotionInfoSync(data_num), data_num 1-63    [undocumented]
+
+int32 arm_no      # 0-based
+uint8 source
+int32 data_type   # SOURCE_AS_EX only, passed through to KRNX
+int32 data_num    # SOURCE_AS_SYNC only
+---
+KrnxResult result
+MotionInfo[] data   # one entry, or data_num entries for SOURCE_AS_SYNC

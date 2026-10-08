@@ -1,0 +1,7 @@
+# krnx_Save (= krnx_SaveEx without a progress callback): save controller programs/data to a file on the PC running the driver.
+# Not covered by KRNX API Manual DEV 2.3.0.
+string filename       # path on the driver host
+string program_name   # empty: everything selected by option
+int32 option          # OR of the QUAL_* element types in krnx.h. 0: library default
+---
+KrnxResult result

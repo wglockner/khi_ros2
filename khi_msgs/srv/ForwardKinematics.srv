@@ -1,0 +1,10 @@
+# krnx_JointToXyzoat + krnx_JointToMatrix (KRNX API Manual 7.1).
+# Pose of the robot FLANGE in the robot NULL BASE frame: the controller's TOOL/BASE
+# transformations are NOT applied (compose them with ~/transform_math).
+int32 arm_no       # 0-based
+float32[] joint    # [rad or mm]. empty: current actual joint positions
+---
+KrnxResult result
+float32[] joint     # the joint values used (18)
+float32[6] xyzoat   # X,Y,Z [mm], O,A,T [rad] (Euler Z-Y-Z)
+float32[12] matrix  # 3x4, column-major: n(xyz) o(xyz) a(xyz) p(xyz)[mm]

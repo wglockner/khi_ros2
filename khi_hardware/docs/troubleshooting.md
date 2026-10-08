@@ -34,6 +34,19 @@ ros2 control switch_controllers --activate khi_controller
 ros2 control set_hardware_component_state <robot_name> active
 ```
 
+### Error: krnx_Open returned -0x1100 / 'connect' failed (errno=111 port=8100) on a SECOND controller
+The controller pings, is in REPEAT and shows no error, and `controller_no` 0 on the other
+arm works. KRNX maps each controller number to a port set through `port_ref.tbl` /
+`port_def.tbl`, read from the **working directory** of the process calling `krnx_Open`.
+Without the files only controller number 0 gets the E-controller ports (AUX/telnet 23);
+controller number 1 gets a set with AUX 8100 that a real E-controller does not serve, so
+the connect is refused. Ship the tables and start the controller manager in their
+directory (the rambl_compositions launcher does this for `krnx_port_tables:`; see
+`isu_workcell/config/krnx/README.md`). `port_ref.tbl` needs one line per controller slot
+(16); fewer lines are rejected (`bad ctrl no(N)`) and the defaults are silently used.
+Check with the probe: `tools/krnx_probe.cpp` built by hand, `probe <ip> read 1` from the
+table directory. Seen 2026-09-29 on the CX165L (192.168.1.23).
+
 ### Error: XX returned -0xXXXX
 API %s of KRNX returned the error code -0x%X. (e.g. `krnx_Open returned -0x%X`)  
 Please refer to the KRNX Error section to resolve the error.
@@ -62,6 +75,27 @@ If the load mass and load center of gravity position for the tool have not been 
 Instead of the joint experiencing current saturation, it may be improved by reducing the acceleration of the joint that is operated simultaneously.
 
 <br>
+
+### Error: Cannot turn on motor power: N x 'ZPOW ON' over X s never lit the motor lamp
+
+activate() sends the AS monitor command `ZPOW ON` itself (not `krnx_PowerOnMotorWithOnWait`,
+which discards the controller's reply and gives up after one ~2.4 s wait), logs the
+controller's verbatim reply per attempt, polls the panel motor lamp for `MOTOR_ON_WAIT_MS`,
+and retries `MOTOR_ON_ATTEMPTS` times. If it still fails the log carries the last reply and a
+full `Controller status (...)` line.
+
+- Reply non-empty (a `(Wxxxx)` / `(Exxxx)` message): that is the controller's reason.
+  Clear it (pendant message line) and activate again.
+- Reply empty, no AS error, and the pendant CAN turn motor power on: something else was on
+  the KRNX AS channel during activate. The driver reserves that channel while activating
+  (`KhiDriver::is_transitioning()`: publishers skip, services refuse, and `k2_khi_panel` holds
+  its polls), so look for another KRNX client on the controller (a second driver, a probe).
+- Reply empty and the pendant cannot turn motor power on either: a cell interlock or a
+  safety-unit (Cubic-S) condition that AS does not report as an error. Check the pendant.
+
+Seen on the K2 cell 2026-09-19: two consecutive bring-ups refused with a clean controller;
+a fresh read-only KRNX session (`tools/krnx_probe.cpp`) then had `ZPOW ON` accepted
+instantly, which pointed at concurrent channel use during activate rather than the controller.
 
 ## KRNX Error
 

@@ -1,0 +1,9 @@
+# krnx_SetPanelInfo. NOT covered by KRNX API Manual DEV 2.3.0: requires the hardware parameter
+# enable_undocumented_krnx_api=true.
+#
+# WARNING: presumed to operate the controller's panel switches remotely (motor power,
+# cycle start, run/hold).
+int32 arm_no   # 0-based
+PanelInfo panel
+---
+KrnxResult result

@@ -13,6 +13,9 @@
 // limitations under the License.
 
 #include "khi_hardware/khi_service.hpp"
+
+#include <string>
+
 #include "khi_hardware/khi_driver.hpp"
 #include "khi_hardware/khi_robot.hpp"
 #include "rclcpp/rclcpp.hpp"
@@ -48,22 +51,50 @@ void KhiService::init(const KhiDriver & driver)
 
 void KhiService::start(KhiDriver & driver)
 {
+  // A lifecycle transition (activate / deactivate) owns the KRNX AUX/AS channel while it runs (KhiDriver::is_transitioning()).
+  static const std::string kTransitionRefusal =
+    "refused: hardware lifecycle transition in progress (activate: motor power-on / RTC start; deactivate: hold, kill, motor power-off); retry once the "
+    "component is active.";
+
   auto get_signal = [&driver](
                       const khi_msgs::srv::GetSignal::Request::SharedPtr & req,
                       const khi_msgs::srv::GetSignal::Response::SharedPtr & resp)
-  { driver.get_signal_srv_cb(req, resp); };
+  {
+    if (driver.is_transitioning())
+    {
+      resp->success = false;
+      return;
+    }
+    driver.get_signal_srv_cb(req, resp);
+  };
   get_signal_service_ = node_->create_service<khi_msgs::srv::GetSignal>("~/get_signal", get_signal);
 
   auto set_signal = [&driver](
                       const khi_msgs::srv::SetSignal::Request::SharedPtr & req,
                       const khi_msgs::srv::SetSignal::Response::SharedPtr & resp)
-  { driver.set_signal_srv_cb(req, resp); };
+  {
+    if (driver.is_transitioning())
+    {
+      resp->success = false;
+      resp->error_msg = kTransitionRefusal;
+      return;
+    }
+    driver.set_signal_srv_cb(req, resp);
+  };
   set_signal_service_ = node_->create_service<khi_msgs::srv::SetSignal>("~/set_signal", set_signal);
 
   auto exec_khi_command = [&driver](
                             const khi_msgs::srv::ExecKhiCommand::Request::SharedPtr & req,
                             const khi_msgs::srv::ExecKhiCommand::Response::SharedPtr & resp)
-  { driver.exec_khi_command_srv_cb(req, resp); };
+  {
+    if (driver.is_transitioning())
+    {
+      resp->success = false;
+      resp->error_msg = kTransitionRefusal;
+      return;
+    }
+    driver.exec_khi_command_srv_cb(req, resp);
+  };
   khi_cmd_service_ =
     node_->create_service<khi_msgs::srv::ExecKhiCommand>("~/exec_khi_command", exec_khi_command);
 
@@ -71,6 +102,12 @@ void KhiService::start(KhiDriver & driver)
                        const khi_msgs::srv::ResetError::Request::SharedPtr & req,
                        const khi_msgs::srv::ResetError::Response::SharedPtr & resp)
   {
+    if (driver.is_transitioning())
+    {
+      resp->success = false;
+      resp->error_msgs = {kTransitionRefusal};
+      return;
+    }
     // Reset every arm, not just arm 0 (duAro has two).
     bool all_ok = true;
     const int arm_count = static_cast<int>(driver.get_robot().arms.size());
@@ -106,6 +143,8 @@ void KhiService::start(KhiDriver & driver)
   change_ft_output_mode_service_ = node_->create_service<khi_msgs::srv::ChangeFTOutputMode>(
     "~/change_ft_output_mode", change_ft_output_mode);
 
+  driver.create_extended_services(*node_, extended_services_);
+
   RCLCPP_INFO(rclcpp::get_logger("khi_hardware"), "KhiService Start");
 }
 
@@ -118,5 +157,6 @@ void KhiService::stop()
   set_timeout_service_.reset();
   set_ati_software_bias_service_.reset();
   change_ft_output_mode_service_.reset();
+  extended_services_.clear();
 }
 }  // namespace khi_hardware

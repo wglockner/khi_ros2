@@ -1,0 +1,10 @@
+# krnx_SetRtcCompMask (KRNX API Manual 6.18): enable/disable RTC complement data per joint.
+#
+# WARNING: a masked joint ignores the ros2_control position stream and holds while the other
+# joints keep moving. Refused while the hardware interface is actively streaming unless
+# allow_while_active is set.
+int32 arm_no   # 0-based
+int32 mask     # bit i = joint i+1. 1: enabled, 0: disabled
+bool allow_while_active
+---
+KrnxResult result

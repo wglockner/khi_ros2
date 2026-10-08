@@ -476,6 +476,11 @@ try
   robot.ip_address = info_.hardware_parameters.at("robot_ip");
   robot.period = 1000 / update_rate;
   robot.arms = arms;
+  // Optional (find, not at): URDFs written before the extended KRNX services stay valid.
+  const auto undocumented_api = info_.hardware_parameters.find("enable_undocumented_krnx_api");
+  robot.enable_undocumented_krnx_api =
+    undocumented_api != info_.hardware_parameters.end() &&
+    (undocumented_api->second == "True" || undocumented_api->second == "true");
 
   KhiPeriodicDataConfig config = {};
   config.is_actual_current_enabled =

@@ -1,0 +1,6 @@
+# krnx_GetLimitM / krnx_GetLimitP (KRNX API Manual 5.2): the controller's axis working limits.
+int32 arm_no   # 0-based
+---
+KrnxResult result
+float32[] lower   # 18 entries [rad or mm]
+float32[] upper   # 18 entries [rad or mm]

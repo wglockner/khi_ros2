@@ -1,0 +1,12 @@
+# krnx_List (KRNX API Manual 4.20): list programs / data as text.
+uint16 TYPE_PROGRAM = 1
+uint16 TYPE_LOCATION = 2
+uint16 TYPE_REAL = 4
+uint16 TYPE_STRING = 8
+uint16 TYPE_INTEGER = 16
+
+string element_name   # empty: all data of element_type
+int32 element_type    # OR of TYPE_* (the QUAL_* values of krnx.h)
+---
+KrnxResult result
+string listing        # truncated at 64 KiB

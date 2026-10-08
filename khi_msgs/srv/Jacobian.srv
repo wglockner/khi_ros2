@@ -1,0 +1,13 @@
+# krnx_JacobiXyzoat / krnx_JacobiMatrix / krnx_JaInvXyzoat / krnx_JaInvMatrix.
+# NOT covered by KRNX API Manual DEV 2.3.0: read-only, but the 6x6 element order is unverified.
+int32 arm_no          # 0-based
+float32[] joint       # [rad or mm]. empty: current actual joint positions
+bool inverse          # true: inverse Jacobian (krnx_JaInv*)
+bool tool_as_matrix   # false: tool_xyzoat is used, true: tool_matrix is used
+float32[6] tool_xyzoat
+float32[12] tool_matrix
+---
+KrnxResult result     # KRNX_E_CANNOTCAL (-0x1009): singular
+float32[36] jacobian  # 6x6 exactly as written by KRNX
+float32[6] xyzoat     # tool pose output (tool_as_matrix = false)
+float32[12] matrix    # tool pose output (tool_as_matrix = true)

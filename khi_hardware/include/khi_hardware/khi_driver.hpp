@@ -16,6 +16,8 @@
 #define KHI_HARDWARE__KHI_DRIVER_HPP_
 
 #include <math.h>
+#include <atomic>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <utility>
@@ -32,6 +34,7 @@
 #include "khi_msgs/srv/set_ati_software_bias.hpp"
 #include "khi_msgs/srv/set_signal.hpp"
 #include "khi_msgs/srv/set_timeout.hpp"
+#include "rclcpp/rclcpp.hpp"
 
 namespace khi_hardware
 {
@@ -76,11 +79,30 @@ public:
   virtual void change_ft_output_mode_srv_cb(
     const khi_msgs::srv::ChangeFTOutputMode::Request::SharedPtr & req,
     const khi_msgs::srv::ChangeFTOutputMode::Response::SharedPtr & resp) = 0;
+  // Extended driver-specific services (the KRNX API surface). Created on the KhiService node;
+  // the returned handles are owned by KhiService and dropped in KhiService::stop().
+  virtual void create_extended_services(
+    rclcpp::Node & /*node*/, std::vector<rclcpp::ServiceBase::SharedPtr> & /*services*/)
+  {
+  }
   virtual bool is_error() const = 0;
   virtual bool get_error_info(
     std::vector<int> & error_codes, std::vector<std::string> & error_msgs) const = 0;
   virtual bool get_actual_current(std::vector<float> & actual_current) const = 0;
   virtual bool is_communicating() const = 0;
+
+  /**
+   * @brief True while activate() or deactivate() (also shutdown/error) runs its
+   * KRNX sequence: power-on / RTC start, or hold / kill / power-off.
+   *
+   * The KRNX AUX/AS channel is reserved for the transition during that window:
+   * the krnx_PowerOn/OffMotorWith*Wait wrappers are one monitor command followed
+   * by a series of panel reads, and the library keeps that panel state in a global
+   * buffer, so a publisher or service call landing between those reads can make
+   * the power-on wrongly report "motor lamp never lit" (seen on the K2 cell,
+   * 2026-09-19). Publishers skip their cycle and services refuse while this is set.
+   */
+  bool is_transitioning() const { return transitioning_.load(); }
 
   KhiRobot & get_robot() { return robot_; }
 
@@ -95,6 +117,9 @@ protected:
   static constexpr int OFF = 0;
   static constexpr int PRINT_THRESH = 1000;
   static constexpr int ERROR_RESET_TIME = 200;  // [ms]
+  // Set by activate() / deactivate() / shutdown() / error() for their duration (see
+  // is_transitioning()).
+  std::atomic<bool> transitioning_{false};
   static constexpr double MSEC2SEC = 0.001;
   static constexpr double RAD2DEG = 180 / M_PI;
   static constexpr double MM2M = 0.001;

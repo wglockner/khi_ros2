@@ -1,0 +1,8 @@
+# krnx_GetProgramInfo (KRNX API Manual 5.4) / krnx_GetProgramInfo2 (undocumented variant)
+int32 arm_no      # 0-based
+bool use_info2    # true: krnx_GetProgramInfo2
+---
+KrnxResult result
+MonInfo[] mon           # one per arm of this controller
+StepperInfo[] robot     # one per arm of this controller
+StepperInfo[] pc        # 3 PC programs

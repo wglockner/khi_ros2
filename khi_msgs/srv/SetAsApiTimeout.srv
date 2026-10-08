@@ -1,0 +1,5 @@
+# krnx_SetAsApiTimeoutPeriod (KRNX API Manual 5.9). Library default 100 ms.
+# (~/set_timeout sets the AUX-API timeout.)
+int32 as_timeout   # [ms]
+---
+KrnxResult result

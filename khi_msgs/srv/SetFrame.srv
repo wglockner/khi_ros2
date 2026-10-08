@@ -1,0 +1,13 @@
+# krnx_SetToolMatrix / krnx_SetBaseMatrix (KRNX API Manual 4.13, 4.15)
+#
+# WARNING: changes the controller's TOOL/BASE transformation. ros2_control streams joint-space
+# commands so its motion is unaffected, but controller-side Cartesian data (XYZOAT feedback,
+# AS programs) changes immediately.
+uint8 FRAME_TOOL = 0
+uint8 FRAME_BASE = 1
+
+uint8 frame
+int32 arm_no        # 0-based
+float32[6] xyzoat   # X,Y,Z [mm], O,A,T [rad] (Euler Z-Y-Z)
+---
+KrnxResult result

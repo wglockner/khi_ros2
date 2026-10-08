@@ -1,0 +1,5 @@
+# krnx_SetMonSpeed (KRNX API Manual 4.6). Robot speed = monitor speed x program speed.
+int32 arm_no    # 0-based
+float32 speed   # [%]
+---
+KrnxResult result

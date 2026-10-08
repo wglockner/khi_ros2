@@ -57,6 +57,9 @@ struct KhiRobot
   int controller_no;
   std::vector<KhiRobotArmData> arms;
   KhiFTSensor ft_sensor;
+  // Opt-in for the extended services that wrap KRNX functions the KRNX API manual does not
+  // document AND that change controller state. Optional hardware parameter, default false.
+  bool enable_undocumented_krnx_api = false;
 };
 }  // namespace khi_hardware
 #endif  // KHI_HARDWARE__KHI_ROBOT_HPP_

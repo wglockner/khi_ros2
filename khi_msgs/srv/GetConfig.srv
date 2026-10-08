@@ -1,0 +1,8 @@
+# krnx_GetConfig: arm configuration (posture) bits for a joint vector.
+# NOT covered by KRNX API Manual DEV 2.3.0: read-only, bit meaning unverified.
+int32 arm_no      # 0-based
+float32[] joint   # [rad or mm]. empty: current actual joint positions
+---
+KrnxResult result
+float32[] joint   # joint buffer after the call (18)
+int32 conf

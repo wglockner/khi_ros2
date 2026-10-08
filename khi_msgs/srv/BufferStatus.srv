@@ -1,0 +1,6 @@
+# krnx_BufferBusy / krnx_BufferEmpty. NOT covered by KRNX API Manual DEV 2.3.0: read-only.
+int32 buffer_no
+---
+KrnxResult result
+int32 busy    # raw return value of krnx_BufferBusy
+int32 empty   # raw return value of krnx_BufferEmpty

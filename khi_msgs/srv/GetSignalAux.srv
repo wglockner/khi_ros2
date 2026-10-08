@@ -1,0 +1,6 @@
+# krnx_GetSignal (KRNX API Manual 4.16): synchronous AUX-API read of one signal, full 960
+# signal range. ~/get_signal is faster (RT cyclic cache) but is limited to 512 signals.
+int32 signal_number   # DO 1-960, DI 1001-1960, internal 2001-2960
+---
+KrnxResult result
+bool is_on

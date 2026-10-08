@@ -1,0 +1,21 @@
+# Read-only snapshot of the RTC (real time control) state. Never alters the motion stream.
+# krnx_GetRtcInfo, krnx_GetRtcSwitch, krnx_GetRtcErrorFlag, krnx_GetRtcCompData,
+# krnx_GetRtcCompLimit, krnx_GetRtcBufferLength, krnx_GetSequenceNo, krnx_GetRtCyclicDataKind,
+# krnx_GetRtCyclicCtlKind, krnx_GetASCycle
+int32 arm_no   # 0-based
+---
+KrnxResult result            # first failing call; the remaining fields are still filled
+int16 cycle                  # TKrnxRtcInfo.cyc [ms]
+int16 buffer                 # TKrnxRtcInfo.buf (buffering cycle number)
+int16 interpolation          # TKrnxRtcInfo.interpolation
+bool rtc_switch              # RTC_SW state on the controller
+int32 error_flag             # set by krnx_SetRtcErrorFlag, cleared by an AS error reset
+float32[] comp               # last RTC complement data (18) [rad or mm]
+float32[] comp_limit         # per-cycle complement step limit (18) [rad or mm]
+int32 buffer_length          # complement data queued in the controller
+uint16 sequence_no
+uint16 cyclic_data_kind_krnx # KRNX_CYC_KIND_* requested by the driver
+uint16 cyclic_data_kind_as   # KRNX_CYC_KIND_* supported by AS
+uint16 cyclic_ctl_kind_krnx  # KRNX_CYC_KRNX2AS_KIND_*
+uint16 cyclic_ctl_kind_as
+int32 as_cycle               # krnx_GetASCycle

@@ -1,0 +1,20 @@
+# KRNX Matrix-API (KRNX API Manual 7.3-7.6). Pure math, no controller round trip.
+uint8 OP_MULTIPLY = 0    # c = a * b
+uint8 OP_INVERSE = 1     # c = a^-1
+uint8 OP_CONVERT = 2     # a in one representation -> the other
+uint8 OP_FRAME = 3       # FRAME(a, b, c, d)
+
+uint8 op
+bool use_matrix          # false: xyzoat inputs, true: 3x4 matrix inputs
+float32[6] xyzoat_a
+float32[6] xyzoat_b
+float32[6] xyzoat_c
+float32[6] xyzoat_d
+float32[12] matrix_a
+float32[12] matrix_b
+float32[12] matrix_c
+float32[12] matrix_d
+---
+KrnxResult result
+float32[6] xyzoat    # always filled
+float32[12] matrix   # always filled

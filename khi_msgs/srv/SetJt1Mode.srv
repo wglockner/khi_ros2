@@ -1,0 +1,5 @@
+# krnx_SetJT1Mode. NOT covered by KRNX API Manual DEV 2.3.0: requires the hardware parameter
+# enable_undocumented_krnx_api=true. Library-global kinematics option; effect unverified.
+int32 mode
+---
+KrnxResult result

@@ -13,7 +13,9 @@
 // limitations under the License.
 
 #include <algorithm>
+#include <cctype>
 #include <climits>
+#include <string>
 
 #include "hardware_interface/types/hardware_interface_type_values.hpp"
 #include "khi_hardware/khi_driver.hpp"
@@ -29,6 +31,19 @@
 
 namespace khi_hardware
 {
+namespace
+{
+// Sets KhiDriver::transitioning_ for the lifetime of a lifecycle transition, so the
+// publishers, services and dashboard stay off the KRNX AUX/AS channel while the
+// krnx_PowerOn/OffMotorWith*Wait-style command-then-poll sequences run.
+struct TransitionScope
+{
+  std::atomic<bool> & flag;
+  explicit TransitionScope(std::atomic<bool> & f) : flag(f) { flag.store(true); }
+  ~TransitionScope() { flag.store(false); }
+};
+}  // namespace
+
 KhiResultCode KhiKrnxDriver::initialize()
 {
   // Check KRNX Version
@@ -136,6 +151,9 @@ KhiResultCode KhiKrnxDriver::configure()
  */
 KhiResultCode KhiKrnxDriver::activate()
 {
+  // Reserve the AUX/AS channel for the whole sequence (see KhiDriver::is_transitioning()).
+  TransitionScope transition_scope(transitioning_);
+
   if (!is_communicating())
   {
     RCLCPP_ERROR(
@@ -230,6 +248,7 @@ KhiResultCode KhiKrnxDriver::activate()
     return KhiResultCode::FAILURE;
   }
 
+  is_active_.store(true);
   return KhiResultCode::SUCCESS;
 }
 
@@ -238,6 +257,8 @@ KhiResultCode KhiKrnxDriver::activate()
  */
 KhiResultCode KhiKrnxDriver::deactivate()
 {
+  TransitionScope transition_scope(transitioning_);
+  is_active_.store(false);
   // Add wait time to account for the possiblity of pressing the HOLD button on the TP during
   // ACTIVATE.
   rclcpp::sleep_for(std::chrono::seconds(1));
@@ -272,6 +293,7 @@ KhiResultCode KhiKrnxDriver::cleanup()
 
 KhiResultCode KhiKrnxDriver::shutdown()
 {
+  TransitionScope transition_scope(transitioning_);
   hold(false);
 
   kill_program(false);
@@ -285,6 +307,9 @@ KhiResultCode KhiKrnxDriver::shutdown()
 
 KhiResultCode KhiKrnxDriver::error()
 {
+  TransitionScope transition_scope(transitioning_);
+  is_active_.store(false);
+
   hold(false);
 
   kill_program(false);
@@ -583,14 +608,17 @@ bool KhiKrnxDriver::write()
     return false;
   }
 
-  const int return_code = krnx_SendRtcCompData(robot_.controller_no, seq_no_);
-  if (return_code != KRNX_NOERROR)
   {
-    RCLCPP_ERROR(rclcpp::get_logger("khi_hardware"), "krnx_SendRtcCompData -0x%X", -return_code);
-    return false;
-  }
+    std::lock_guard<std::mutex> lock(rtc_send_mutex_);
+    const int return_code = krnx_SendRtcCompData(robot_.controller_no, seq_no_);
+    if (return_code != KRNX_NOERROR)
+    {
+      RCLCPP_ERROR(rclcpp::get_logger("khi_hardware"), "krnx_SendRtcCompData -0x%X", -return_code);
+      return false;
+    }
 
-  seq_no_++;
+    seq_no_++;
+  }
 
   for (auto & arm : robot_.arms)
   {
@@ -918,22 +946,92 @@ bool KhiKrnxDriver::reset_error() const
 
 /**
  * @brief Turn on the motor power.
- * @param cont_no controller number
- * @return true Success
- * @return false Failure
+ *
+ * Sends the AS monitor command "ZPOW ON" itself rather than calling
+ * krnx_PowerOnMotorWithOnWait. That wrapper (libkrnx 3.4.0, disassembled
+ * 2026-09-19) issues the same monitor command, discards the controller's text
+ * reply — the only place a refused motor-ON says why — then reads the panel
+ * lamp 24 times and returns KRNX_E_MOTOR_ON_FAIL, once, with no retry. Here
+ * every attempt logs the verbatim reply, the lamp is polled for
+ * MOTOR_ON_WAIT_MS, and up to MOTOR_ON_ATTEMPTS are made before the refusal
+ * is reported with the controller's full status. The lamp is read with
+ * krnx_GetPanelInfo (a direct AS query), not the cyclic-stream status, so a
+ * frozen feedback stream cannot fake a refusal.
+ * @return true Motor power is ON
+ * @return false Refused after every attempt (already logged)
  */
 bool KhiKrnxDriver::power_on_motor() const
 {
-  // Motor Power ON
-  int error_code = 0;
-  const int return_code = krnx_PowerOnMotorWithOnWait(robot_.controller_no, 0, &error_code);
-  if (return_code != KRNX_NOERROR)
+  const int cont_no = robot_.controller_no;
+  const auto motor_is_on = [cont_no]()
   {
-    RCLCPP_ERROR(rclcpp::get_logger("khi_hardware"), "Cannot turn on motor power.");
-    return false;
+    TKrnxPanelInfo panel = {};
+    return krnx_GetPanelInfo(cont_no, 0, &panel) == KRNX_NOERROR && panel.motor_lamp == ON;
+  };
+  const auto trimmed = [](const char * text)
+  {
+    std::string s(text);
+    const auto not_space = [](unsigned char ch) { return !std::isspace(ch); };
+    s.erase(s.begin(), std::find_if(s.begin(), s.end(), not_space));
+    s.erase(std::find_if(s.rbegin(), s.rend(), not_space).base(), s.end());
+    return s;
+  };
+  // libkrnx's wrapper addresses the arm as "ZPOW <n>: ON". The plain form is
+  // what this cell's single-arm controller was verified to accept
+  // (2026-09-19, read-only probe); multi-arm controllers keep the numbered form
+  // for arm 1, which is the arm the upstream wrapper call targeted.
+  const char * cmd = robot_.arms.size() > 1 ? "ZPOW 1: ON" : "ZPOW ON";
+
+  std::string last_reply;
+  for (int attempt = 1; attempt <= MOTOR_ON_ATTEMPTS; attempt++)
+  {
+    if (motor_is_on())
+    {
+      if (attempt == 1)
+      {
+        RCLCPP_INFO(rclcpp::get_logger("khi_hardware"), "Motor power is already ON.");
+      }
+      return true;
+    }
+
+    char reply[KRNX_MSGSIZE] = {};
+    int as_err = 0;
+    const int return_code = krnx_ExecMon(cont_no, cmd, reply, sizeof(reply), &as_err);
+    last_reply = trimmed(reply);
+    if (return_code != KRNX_NOERROR || as_err != 0)
+    {
+      RCLCPP_WARN(
+        rclcpp::get_logger("khi_hardware"),
+        "'%s' attempt %d/%d: krnx_ExecMon returned -0x%X, AS error %d, reply '%s'", cmd, attempt,
+        MOTOR_ON_ATTEMPTS, -return_code, as_err, last_reply.c_str());
+    }
+
+    for (int waited_ms = 0; waited_ms < MOTOR_ON_WAIT_MS; waited_ms += MOTOR_ON_POLL_MS)
+    {
+      rclcpp::sleep_for(std::chrono::milliseconds(MOTOR_ON_POLL_MS));
+      if (motor_is_on())
+      {
+        RCLCPP_INFO(
+          rclcpp::get_logger("khi_hardware"), "Motor power ON after %d ms (attempt %d/%d).",
+          waited_ms + MOTOR_ON_POLL_MS, attempt, MOTOR_ON_ATTEMPTS);
+        return true;
+      }
+    }
+    RCLCPP_WARN(
+      rclcpp::get_logger("khi_hardware"),
+      "Motor lamp still OFF %d ms after '%s' (attempt %d/%d); controller reply: '%s'",
+      MOTOR_ON_WAIT_MS, cmd, attempt, MOTOR_ON_ATTEMPTS, last_reply.c_str());
   }
 
-  return true;
+  RCLCPP_ERROR(
+    rclcpp::get_logger("khi_hardware"),
+    "Cannot turn on motor power: %d x '%s' over %.0f s never lit the motor lamp and no AS error "
+    "was raised. Last controller reply: '%s'. Read the pendant's message line; if the pendant "
+    "CAN turn motor power on, something else is using the KRNX AS channel (another KRNX "
+    "client?) — otherwise clear the condition the pendant names and activate again.",
+    MOTOR_ON_ATTEMPTS, cmd, MOTOR_ON_ATTEMPTS * MOTOR_ON_WAIT_MS * MSEC2SEC, last_reply.c_str());
+  log_robot_status("motor power refused");
+  return false;
 }
 
 /**
@@ -982,6 +1080,35 @@ bool KhiKrnxDriver::get_motor_lamp(int & motor_lamp, const int arm_no, const boo
 }
 
 /**
+ * @brief Log the controller's panel/state lamps so a refused activate says why.
+ *        Read-only (krnx_GetCurRobotStatus); -1 = ON, 0 = OFF in KRNX lamp fields.
+ */
+void KhiKrnxDriver::log_robot_status(const char * context) const
+{
+  for (int arm_no = 0; arm_no < static_cast<int>(robot_.arms.size()); arm_no++)
+  {
+    TKrnxCurRobotStatus st;
+    if (krnx_GetCurRobotStatus(robot_.controller_no, arm_no, &st) != KRNX_NOERROR)
+    {
+      continue;
+    }
+    int error_code = 0;
+    krnx_GetCurErrorInfo(robot_.controller_no, arm_no, &error_code);
+    RCLCPP_ERROR(
+      rclcpp::get_logger("khi_hardware"),
+      "Controller status (%s, arm %d): motor %s, repeat %s, cycle %s, run %s, teach_lock %s, "
+      "emergency %s, system_emergency %s, protective_stop %s, rtc_active %s, program_run %s, "
+      "trigger %s, monitor_speed %d%%, AS error %d",
+      context, arm_no + 1, st.motor_lamp ? "ON" : "off", st.repeat_lamp ? "ON" : "off",
+      st.cycle_lamp ? "ON" : "off", st.run_lamp ? "ON" : "off", st.teach_lock_lamp ? "ON" : "off",
+      st.emergency ? "ON" : "off", st.system_emergency ? "ON" : "off",
+      st.protective_stop ? "ON" : "off", st.rtc_active ? "ON" : "off",
+      st.rb_program_run ? "ON" : "off", st.trigger_lamp ? "ON" : "off",
+      static_cast<int>(st.monitor_speed), error_code);
+  }
+}
+
+/**
  * @brief Move to the Home Position.
  * @param cont_no Controller No
  * @return true Success
@@ -1015,7 +1142,13 @@ bool KhiKrnxDriver::exec_rtc_program() const
       timeout_sec_cnt += static_cast<double>(sleep_ms) * MSEC2SEC;
       if (timeout_sec_cnt > timeout_sec_th)
       {
-        RCLCPP_ERROR(rclcpp::get_logger("khi_hardware"), "Failed to activate: timeout");
+        RCLCPP_ERROR(
+          rclcpp::get_logger("khi_hardware"),
+          "Failed to activate: timeout — '%s' was started but rtc_active stayed OFF for %.0f s "
+          "and no AS error was raised. That is the controller not RUNNING the program: check "
+          "HOLD/RUN, CYCLE START, TEACH/REPEAT and that no other program holds the arm.",
+          program.c_str(), timeout_sec_th);
+        log_robot_status("rtc timeout");
         return false;
       }
 

@@ -1,0 +1,9 @@
+# krnx_GetToolMatrix / krnx_GetBaseMatrix (KRNX API Manual 4.12, 4.14)
+uint8 FRAME_TOOL = 0
+uint8 FRAME_BASE = 1
+
+uint8 frame
+int32 arm_no   # 0-based
+---
+KrnxResult result
+float32[6] xyzoat   # X,Y,Z [mm], O,A,T [rad] (Euler Z-Y-Z)

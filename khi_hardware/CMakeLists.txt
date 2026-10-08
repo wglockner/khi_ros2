@@ -44,6 +44,7 @@ add_library(
   src/khi_hardware_interface.cpp
   src/khi_driver.cpp
   src/khi_krnx_driver.cpp
+  src/khi_krnx_api_services.cpp
   src/khi_mock_driver.cpp
   src/khi_service.cpp
   src/khi_publisher.cpp
@@ -94,6 +95,11 @@ install(
 
 if(BUILD_TESTING)
   find_package(ament_cmake_gtest REQUIRED)
+  # Offline: never opens a controller connection.
+  ament_add_gtest(test_krnx_api_services test/test_krnx_api_services.cpp)
+  target_include_directories(test_krnx_api_services PRIVATE include)
+  target_link_libraries(test_krnx_api_services ${PROJECT_NAME} ${krnx_LIBRARIES})
+  ament_target_dependencies(test_krnx_api_services ${TARGET_DEPENDENCIES})
 endif()
 
 ## EXPORTS

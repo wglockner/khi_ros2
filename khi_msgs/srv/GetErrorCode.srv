@@ -1,0 +1,7 @@
+# krnx_GetErrorInfo (KRNX API Manual 5.6, synchronous, ~20 ms) + krnx_ConvertErrorCode (5.7).
+# The ~/error_info topic carries the asynchronous equivalent.
+int32 arm_no   # 0-based
+---
+KrnxResult result
+int32 error_code        # raw controller error code, 0: none
+string as_error_code    # level + code as in the AS manual "Error Message", e.g. "E1520"

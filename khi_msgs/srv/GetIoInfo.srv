@@ -1,0 +1,11 @@
+# Bulk signal state. Bit (n-1)%8 of byte (n-1)/8 is signal n (DO), 1000+n (DI), 2000+n (internal).
+uint8 SOURCE_CYCLIC_EX = 0  # krnx_GetCurIoInfoEx: RT cyclic cache, 960 signals   [manual 6.5]
+uint8 SOURCE_CYCLIC = 1     # krnx_GetCurIoInfo:   RT cyclic cache, 512 signals   [manual 5.3]
+uint8 SOURCE_AS = 2         # krnx_GetIoInfo:      synchronous AS-API, 512 signals [undocumented]
+
+uint8 source
+---
+KrnxResult result
+uint8[] io_do
+uint8[] io_di
+uint8[] internal

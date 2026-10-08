@@ -102,6 +102,11 @@ void KhiPublisher::stop_executor()
 
 void KhiPublisher::report_error(const KhiDriver & driver)
 {
+  // Stay off the AUX/AS channel while a lifecycle transition owns it (see KhiDriver::is_transitioning()).
+  if (driver.is_transitioning())
+  {
+    return;
+  }
   std::vector<int> error_codes;
   std::vector<std::string> error_msgs;
   driver.get_error_info(error_codes, error_msgs);
@@ -156,6 +161,10 @@ void KhiPublisher::report_actual_current(const KhiDriver & driver)
     return;
   }
 
+  if (driver.is_transitioning())
+  {
+    return;
+  }
   khi_msgs::msg::ActualCurrent msg;
   bool success = driver.get_actual_current(msg.actual_current);
   if (!success)

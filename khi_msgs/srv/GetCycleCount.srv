@@ -1,0 +1,6 @@
+# krnx_GetCycleCount. NOT covered by KRNX API Manual DEV 2.3.0: read-only.
+int32 arm_no   # 0-based
+int32 counter_no
+---
+KrnxResult result   # success when the returned count is >= 0
+int32 count

@@ -18,6 +18,7 @@
 #include <atomic>
 #include <memory>
 #include <thread>
+#include <vector>
 
 #include "khi_msgs/srv/change_ft_output_mode.hpp"
 #include "khi_msgs/srv/exec_khi_command.hpp"
@@ -53,6 +54,7 @@ private:
   rclcpp::Service<khi_msgs::srv::SetTimeout>::SharedPtr set_timeout_service_{};
   rclcpp::Service<khi_msgs::srv::SetATISoftwareBias>::SharedPtr set_ati_software_bias_service_{};
   rclcpp::Service<khi_msgs::srv::ChangeFTOutputMode>::SharedPtr change_ft_output_mode_service_{};
+  std::vector<rclcpp::ServiceBase::SharedPtr> extended_services_{};
 };
 
 }  // namespace khi_hardware

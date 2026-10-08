@@ -1,0 +1,14 @@
+# krnx_SetConveyorSpeed(Ex) / krnx_SetConveyorPos(Ex). NOT covered by KRNX API Manual
+# DEV 2.3.0: requires the hardware parameter enable_undocumented_krnx_api=true.
+uint8 QUANTITY_SPEED = 0
+uint8 QUANTITY_POSITION = 1
+
+int32 arm_no      # 0-based
+uint8 quantity
+bool use_axis     # true: the *Ex variant with axis_no
+int32 axis_no
+int32 work_no     # QUANTITY_POSITION only
+float32 value
+---
+KrnxResult result
+float32 previous

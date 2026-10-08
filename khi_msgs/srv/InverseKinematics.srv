@@ -1,0 +1,21 @@
+# Inverse kinematics of the robot FLANGE in the robot NULL BASE frame (TOOL/BASE not applied).
+uint8 METHOD_XYZOAT = 0        # krnx_XyzoatToJoint                   [manual 7.2]
+uint8 METHOD_MATRIX = 1        # krnx_MatrixToJoint                   [manual 7.2]
+uint8 METHOD_XYZOAT_CONF = 2   # krnx_XyzoatToJoint2(conf)            [undocumented]
+uint8 METHOD_XYZ456 = 3        # krnx_Xyz456ToJoint(tool)             [undocumented]
+
+uint8 REFERENCE_CURRENT = 0    # old_joint = current actual joint positions
+uint8 REFERENCE_GIVEN = 1      # old_joint = reference_joint
+uint8 REFERENCE_NONE = 2       # old_joint = NULL: solve for the controller's configured posture
+
+int32 arm_no   # 0-based
+uint8 method
+float32[6] xyzoat        # METHOD_XYZOAT, METHOD_XYZOAT_CONF, METHOD_XYZ456
+float32[12] matrix       # METHOD_MATRIX
+uint8 reference
+float32[] reference_joint
+int32 conf               # METHOD_XYZOAT_CONF: configuration bits as returned by ~/get_config
+float32[6] tool          # METHOD_XYZ456
+---
+KrnxResult result        # KRNX_E_OUTOFRANGE (-0x1008): no solution
+float32[] joint          # 18 entries [rad or mm]

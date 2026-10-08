@@ -1,0 +1,17 @@
+# krnx_BufferRecvF / W / B and krnx_BufferPeekF / W / B. NOT covered by KRNX API Manual
+# DEV 2.3.0: requires the hardware parameter enable_undocumented_krnx_api=true.
+uint8 TYPE_FLOAT = 0
+uint8 TYPE_WORD = 1
+uint8 TYPE_BYTE = 2
+
+int32 buffer_no
+uint8 type
+bool peek          # true: krnx_BufferPeek* (leave the data queued)
+int32 max_count    # 1-4096
+int32 timeout
+---
+KrnxResult result
+int16 request_code
+float32[] float_data
+int16[] word_data
+uint8[] byte_data

@@ -1,0 +1,5 @@
+# krnx_PowerOnMotorWithOnWait / krnx_PowerOffMotorWithOffWait
+int32 arm_no   # 0-based
+bool on
+---
+KrnxResult result
