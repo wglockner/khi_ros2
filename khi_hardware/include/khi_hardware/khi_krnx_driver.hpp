@@ -181,6 +181,9 @@ private:
   // hardware components in one controller_manager (dual-robot workcells) each
   // index their own arm 0, and shared statics would interleave their data.
   rclcpp::Time rtc_refuse_log_time_{0, 0, RCL_ROS_TIME};
+  // One diagnostics dump per "not writable" episode (see is_writable()).
+  bool stop_diag_logged_ = false;
+  void log_stop_diagnostics(int arm_no, const TKrnxCurRobotStatus & status);
   bool status_have_prev_[KRNX_MAX_ROBOT] = {};
   TKrnxCurRobotStatus status_prev_[KRNX_MAX_ROBOT] = {};
   static constexpr int SATURATION_WINDOW = 100;

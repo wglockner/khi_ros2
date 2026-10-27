@@ -150,3 +150,69 @@ Description and Value of the error codes are shown in the table below.
 | KRNX_E_INVALIDFILENAME    | Invalid File Name               | (-0x2202) |
 | KRNX_E_ILLCONTNO          | Invalid Controller Number       | (-0x2203) |
 | KRNX_E_UNDEFF             | Undefined Error                 | (-0xFFFF) |
+
+## ros2_control features the driver uses (2026-10-27)
+
+- **Introspection.** The component registers its driver internals with the controller_manager's
+  pal_statistics registry (`REGISTER_ROS2_CONTROL_INTROSPECTION`, `KhiDriverHealth` in
+  `khi_driver.hpp`): `<component>.khi.rtc_backlog` (deepest RTC queue of any arm, points),
+  `rtc_refusals` (compensation points the controller refused, cumulative), `rtc_seq`,
+  `write_errors`, `read_failures`, `feedback_frozen` (1 while the robot->PC stream is frozen),
+  `read_us` / `write_us` (cycle durations), `sim_step_refusals` (mock only). Published at the loop
+  rate on `/controller_manager/introspection_data/{names,values}`; `print_recorder.py` saves them
+  per run (`introspection.csv`). PlotJuggler reads the same topics.
+- **Async component.** `<ros2_control ... is_async="true" rw_rate="100" thread_priority="50">`
+  (isu_ros2_control macro params `is_async`, `thread_priority`; the dual cell sets it for the
+  CX165L through `grind_async`) runs read()/write() on the component's own thread, triggered each
+  controller_manager cycle, so a slow or stalled KRNX call on one controller cannot delay the
+  other's RTC stream. `rw_rate` must stay the update rate: the driver derives the RTC cycle it
+  declares to the Kawasaki from it. libkrnx serialises its API calls on one global mutex
+  (`dll_ApiMutex`), so concurrent calls from the two threads are safe but a long call still holds
+  the other up; the hot path (`krnx_GetCurMotionDataEx`, `krnx_PrimeRtcCompData`,
+  `krnx_SendRtcCompData`) is non-blocking. Verified on the mock only; `grind_async` defaults to
+  false since the first real grinder move after the async launch (2026-10-27 14:02:45 CDT) ended
+  0.77 s in with `rtc_active 0`, `rb_rtc1` not running, no error lamp, no emergency / protective
+  stop flag. The motor_lamp / rtc_active change logged afterwards was the driver's own deactivate.
+  Established the same afternoon with the diagnostics and a passive capture: the base had been
+  planned past its mechanical hard stop (see the joint limit note above); neither the thread nor
+  the controller.
+  That deactivate also blocked the control loop for 1.59 s (both arms); fixed the same day, below.
+- **Non-blocking stop sequences (2026-10-27).** When `write()` returns DEACTIVATE or ERROR the
+  resource manager runs the component's lifecycle callback inside the control loop. The KRNX
+  stop sequence (1 s HOLD grace, hold, kill program, motor power off; ~1.6 s, and every call
+  times out when the link is gone) now runs on a worker thread started by `on_deactivate` /
+  `on_error`, which return at once (`start_transition_worker` in `khi_hardware_interface.cpp`).
+  While it runs `read()` / `write()` skip (the state interfaces keep their last value, the
+  publishers and services already hold off through `is_transitioning()`); configure / activate /
+  cleanup / shutdown join it first, so the controller is never driven from two threads, and a
+  failed sequence is logged by the worker and warned about at the next activation. Verified on
+  the mock with `sim_transition_s:=1.5`: deactivating the grinder while the CX110L moved left no
+  overrun and the move completed; reactivation joined the sequence and the grinder moved again.
+- **RTC stop diagnostics (2026-10-27).** The first time `write()` finds an arm not writable
+  (`rtc_active 0`) the driver logs `RTC stop diagnostics`: the whole status word (repeat_lamp 0 =
+  TEACH, run_lamp 0 = HOLD, cycle / trigger / teach-lock lamps, emergency, system_emergency,
+  protective_stop, enverr_warm, can_send_cmd_pos, monitor speed), the panel lamps and the AS
+  error list, or an explicit "the controller reports NO error" line. One dump per episode.
+  Untested against a real stop (nothing in the mock can produce one).
+- **Joint limit enforcement.** With `enforce_command_limits: true` on the controller_manager the
+  resource manager clamps every claimed position command into the URDF joint range and limits its
+  step from the previous command to the URDF velocity limit x the cycle (ros2_control 4.28+,
+  `joint_limits_helpers.cpp`). The URDF velocity limits are therefore the controller's RTC
+  compensation step limits (the `spd_limit` values this driver logs on a refusal) less a 2 %
+  margin (`cx110l_controller_limits.xacro`, `cx165l_macro.xacro`): a step the limiter saturates at
+  exactly the controller's limit could still be refused by float rounding, and one refused point
+  holds the previous one, after which every later point is refused too and the arm freezes while
+  commands stream. The limiter THROWS, and the controller_manager dies, when a MEASURED position is
+  more than 0.5 deg (0.0087 rad) outside the URDF range, so the URDF ranges of both arms are the
+  controllers' own working ranges, EXCEPT where the URDF limit is a physical hard stop the arm can
+  rest on: the CX165L's joint 1 stops mechanically at about +2.6 deg (encoder) in this cell, its URDF
+  upper limit stays +1 deg, and the limiter is disabled for that joint (`<limits enable="false"/>`,
+  macro param `unenforced_joints`). Widening it to +160 deg on 2026-10-27 drove the base into the
+  stop three times ("Deviation error of JT1": five joints tracked the command, JT1 moved 0.03 deg
+  and stopped). A clamp logs `Command of at least one joint is out of limits` (throttled); the
+  JTC still reports its goal as reached.
+- **Mock fidelity.** `KhiMockDriver` (sim_plugin:=khi) follows the command through a first-order
+  lag of `sim_lag_s` (0.09 s, the 80..94 ms the CX110L measured on 2026-10-22; 0 = measured
+  equals commanded) and refuses a command step past the URDF velocity limit x cycle exactly like
+  the controller (holds the previous point, logs `[SIM] A commanded position exceeding the speed
+  limit`, counts `khi.sim_step_refusals`). Measured on the mock: lag median 85 ms, p10 79, p90 91.

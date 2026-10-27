@@ -20,6 +20,8 @@
 #include "hardware_interface/types/hardware_interface_type_values.hpp"
 #include "khi_hardware/khi_driver.hpp"
 #include "khi_hardware/khi_krnx_driver.hpp"
+
+#include <chrono>
 #include "khi_hardware/khi_result_code.hpp"
 #include "khi_hardware/khi_robot.hpp"
 #include "khi_msgs/msg/error_info.hpp"
@@ -329,6 +331,11 @@ KhiResultCode KhiKrnxDriver::error()
  */
 bool KhiKrnxDriver::read()
 {
+  const auto read_t0 = std::chrono::steady_clock::now();
+  const auto timed = [this, read_t0]() {
+    health_.read_us = std::chrono::duration<double, std::micro>(
+      std::chrono::steady_clock::now() - read_t0).count();
+  };
   // Zero-initialized so the freeze-detection memcmp below never compares
   // leftover stack bytes if the library ever short-writes the struct.
   TKrnxCurMotionDataEx motion_cur[KRNX_MAX_ROBOT] = {};
@@ -341,6 +348,8 @@ bool KhiKrnxDriver::read()
     }
     if (!get_curmotion_data_ex(robot_.controller_no, arm_no, &motion_cur[arm_no]))
     {
+      health_.read_failures += 1.0;
+      timed();
       return false;
     }
   }
@@ -392,6 +401,7 @@ bool KhiKrnxDriver::read()
       feedback_frozen_ = false;
       identical_motion_count_ = 0;
     }
+    health_.feedback_frozen = feedback_frozen_ ? 1.0 : 0.0;
 
     // ~1 s of bit-identical data, scaled to the actual update rate (a fixed
     // cycle count would shrink to 0.2 s at 500 Hz and trip on stream jitter).
@@ -432,6 +442,7 @@ bool KhiKrnxDriver::read()
             "The F/T sensor rides the same cyclic stream: force/torque readings are frozen "
             "too. Treat them as STALE until the stream recovers.");
         }
+        health_.feedback_frozen = 1.0;
       }
     }
   }
@@ -511,6 +522,7 @@ bool KhiKrnxDriver::read()
     }
   }
 
+  timed();
   return true;
 }
 
@@ -519,6 +531,11 @@ bool KhiKrnxDriver::read()
  */
 bool KhiKrnxDriver::write()
 {
+  const auto write_t0 = std::chrono::steady_clock::now();
+  const auto timed = [this, write_t0]() {
+    health_.write_us = std::chrono::duration<double, std::micro>(
+      std::chrono::steady_clock::now() - write_t0).count();
+  };
   // Calc Compensation amount
   for (int arm_no = 0; arm_no < static_cast<int>(robot_.arms.size()); arm_no++)
   {
@@ -557,15 +574,20 @@ bool KhiKrnxDriver::write()
   // disagreeing with the hardware update_rate parameter — fixed at the
   // source and now loudly reported by the monitor if it ever returns.
   bool should_decrease_buffer = true;
+  int deepest_backlog = 0;
   for (int arm_no = 0; arm_no < static_cast<int>(robot_.arms.size()); arm_no++)
   {
-    if (krnx_GetRtcBufferLength(robot_.controller_no, arm_no) < KRNX_BUFFER_SIZE)
+    const int backlog = krnx_GetRtcBufferLength(robot_.controller_no, arm_no);
+    deepest_backlog = std::max(deepest_backlog, backlog);
+    if (backlog < KRNX_BUFFER_SIZE)
     {
       should_decrease_buffer = false;
     }
   }
+  health_.rtc_backlog = static_cast<double>(deepest_backlog);
   if (is_position_command_constant() && should_decrease_buffer)
   {
+    timed();
     return true;
   }
 
@@ -587,6 +609,7 @@ bool KhiKrnxDriver::write()
     {
       if (krnx_arm_data_[arm_no].status[jt] != 0)
       {
+        health_.rtc_refusals += 1.0;
         auto now = rclcpp::Clock(RCL_ROS_TIME).now();
         if ((now - rtc_refuse_log_time_).seconds() > 1.0)
         {
@@ -605,6 +628,8 @@ bool KhiKrnxDriver::write()
   if (!is_primed)
   {
     report_write_error();
+    health_.write_errors += 1.0;
+    timed();
     return false;
   }
 
@@ -614,10 +639,13 @@ bool KhiKrnxDriver::write()
     if (return_code != KRNX_NOERROR)
     {
       RCLCPP_ERROR(rclcpp::get_logger("khi_hardware"), "krnx_SendRtcCompData -0x%X", -return_code);
+      health_.write_errors += 1.0;
+      timed();
       return false;
     }
 
     seq_no_++;
+    health_.rtc_seq = static_cast<double>(seq_no_);
   }
 
   for (auto & arm : robot_.arms)
@@ -625,6 +653,7 @@ bool KhiKrnxDriver::write()
     arm.old_command_positions = arm.command_positions;
   }
 
+  timed();
   return true;
 }
 
@@ -1748,6 +1777,64 @@ bool KhiKrnxDriver::get_error_info(
 }
 
 /**
+ * @brief Everything the controller will say about WHY its RTC switch is off, logged once
+ * per episode at the instant write() finds the arm not writable (2026-10-27: the grinder's
+ * RTC program stopped 0.77 s into a move with no error lamp and no e-stop flag, and the
+ * host had nothing else to go on). The status word distinguishes an operator / mode stop
+ * (repeat_lamp 0 = TEACH, run_lamp 0 = HOLD, cycle_lamp 0 = cycle stopped, trigger /
+ * teach-lock) from a safety stop (emergency, system_emergency, protective_stop) and from a
+ * servo refusal (can_send_cmd_pos, enverr_warm); the AS error list carries the controller's
+ * own error codes and texts.
+ */
+void KhiKrnxDriver::log_stop_diagnostics(const int arm_no, const TKrnxCurRobotStatus & st)
+{
+  const int cont_no = robot_.controller_no;
+  TKrnxPanelInfo panel = {};
+  const int panel_rc = krnx_GetPanelInfo(cont_no, arm_no, &panel);
+  RCLCPP_ERROR(
+    rclcpp::get_logger("khi_hardware"),
+    "RTC stop diagnostics (controller %d arm %d): rtc_active %d, rb_program_run %d, "
+    "motor_lamp %d, cycle_lamp %d, repeat_lamp %d (0 = TEACH mode), run_lamp %d (0 = HOLD), "
+    "trigger_lamp %d, teach_lock_lamp %d, emergency %d, system_emergency %d, protective_stop %d, "
+    "enverr_warm 0x%X, can_send_cmd_pos %d, monitor_speed %d%%, check_speed %d; panel: %s",
+    cont_no, arm_no + 1, st.rtc_active, st.rb_program_run, st.motor_lamp, st.cycle_lamp,
+    st.repeat_lamp, st.run_lamp, st.trigger_lamp, st.teach_lock_lamp, st.emergency,
+    st.system_emergency, st.protective_stop, static_cast<unsigned>(st.enverr_warm),
+    st.can_send_cmd_pos, st.monitor_speed, st.check_speed,
+    panel_rc == KRNX_NOERROR
+      ? (std::string("error_lamp ") + std::to_string(panel.error_lamp) + ", motor_lamp " +
+         std::to_string(panel.motor_lamp) + ", cycle_lamp " + std::to_string(panel.cycle_lamp) +
+         ", repeat_lamp " + std::to_string(panel.repeat_lamp) + ", run_lamp " +
+         std::to_string(panel.run_lamp) + ", trigger_lamp " + std::to_string(panel.trigger_lamp) +
+         ", teach_lock_lamp " + std::to_string(panel.teach_lock_lamp) + ", emergency " +
+         std::to_string(panel.emergency))
+          .c_str()
+      : "krnx_GetPanelInfo failed");
+  std::vector<int> codes;
+  std::vector<std::string> msgs;
+  if (get_error_info(codes, msgs) && (!codes.empty() || !msgs.empty()))
+  {
+    std::string list;
+    for (size_t i = 0; i < std::max(codes.size(), msgs.size()); ++i)
+    {
+      list += (i ? "; " : "");
+      if (i < codes.size()) list += std::to_string(codes[i]);
+      if (i < msgs.size()) list += " " + msgs[i];
+    }
+    RCLCPP_ERROR(rclcpp::get_logger("khi_hardware"), "RTC stop diagnostics: AS error list: %s",
+                 list.c_str());
+  }
+  else
+  {
+    RCLCPP_ERROR(
+      rclcpp::get_logger("khi_hardware"),
+      "RTC stop diagnostics: the controller reports NO error: the RTC program was held, "
+      "aborted or ended without a fault (operator, mode switch, external hold, or the "
+      "program itself). Check the pendant's operation history for this time.");
+  }
+}
+
+/**
  * @brief Checks if command values can be written.
  * @return true if writable
  * @return false if not
@@ -1771,7 +1858,19 @@ bool KhiKrnxDriver::is_writable()
         "The robot controller cannot be operated with external command values. (controller_no:%d "
         "arm_no:%d)",
         cont_no, arm_no + 1);
+      if (!stop_diag_logged_)
+      {
+        log_stop_diagnostics(arm_no, status);
+      }
     }
+  }
+  if (is_writable)
+  {
+    stop_diag_logged_ = false;
+  }
+  else
+  {
+    stop_diag_logged_ = true;
   }
 
   // Display the reasons for write failure.

@@ -38,6 +38,29 @@
 
 namespace khi_hardware
 {
+/**
+ * @brief Driver internals exposed through ros2_control introspection (2026-10-27).
+ *
+ * The hardware component registers every field with the controller_manager's
+ * pal_statistics registry (REGISTER_ROS2_CONTROL_INTROSPECTION), so they are published
+ * at the control-loop rate on /controller_manager/introspection_data/{names,values}
+ * instead of surfacing only as rate-limited log lines. Doubles throughout: the registry
+ * publishes doubles. Written by the driver on the control thread, read by the publisher
+ * thread; a torn read of one sample is harmless telemetry.
+ */
+struct KhiDriverHealth
+{
+  double rtc_backlog{0.0};         ///< deepest RTC command queue of any arm [points]
+  double rtc_refusals{0.0};        ///< compensation points the controller refused (cumulative)
+  double rtc_seq{0.0};             ///< RTC sequence number last sent
+  double write_errors{0.0};        ///< write() cycles that failed (cumulative)
+  double read_failures{0.0};       ///< read() cycles that failed (cumulative)
+  double feedback_frozen{0.0};     ///< 1 while the robot->PC cyclic stream is frozen
+  double read_us{0.0};             ///< last read() duration [us]
+  double write_us{0.0};            ///< last write() duration [us]
+  double sim_step_refusals{0.0};   ///< mock only: commands refused for the step limit
+};
+
 class KhiDriver
 {
 public:
@@ -108,6 +131,9 @@ public:
 
   const KhiRobot & get_robot() const { return robot_; }
 
+  /// Introspection fields; stable addresses for the lifetime of the driver.
+  KhiDriverHealth & health() { return health_; }
+
 protected:
   std::string convert_encoding(const char * input, const char * dst, const char * src) const;
 
@@ -127,6 +153,7 @@ protected:
 
   KhiRobot robot_;
   KhiPeriodicDataConfig periodic_data_config_;
+  KhiDriverHealth health_{};
   // Guards robot_.ft_sensor configuration: change_ft_output_mode_srv_cb writes
   // it from the service thread while read() consumes it on the control thread.
   mutable std::mutex ft_config_mutex_;

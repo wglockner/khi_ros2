@@ -14,6 +14,8 @@
 
 #include "khi_hardware/khi_hardware_interface.hpp"
 
+#include "hardware_interface/introspection.hpp"
+
 #include "hardware_interface/types/hardware_interface_type_values.hpp"
 #include "khi_hardware/khi_krnx_driver.hpp"
 #include "khi_hardware/khi_mock_driver.hpp"
@@ -27,10 +29,53 @@ namespace khi_hardware
 {
 KhiHardwareInterface::~KhiHardwareInterface()
 {
+  join_transition_worker();
   // driver_ is null when on_init failed before create_khi_robot_driver().
   if (driver_)
   {
     driver_->error();
+  }
+}
+
+void KhiHardwareInterface::start_transition_worker(
+  const char * what, KhiResultCode (KhiDriver::*fn)())
+{
+  join_transition_worker();
+  transition_what_ = what;
+  transition_in_flight_.store(true);
+  transition_worker_ = std::thread([this, fn]() {
+    const auto result = (*driver_.*fn)();
+    transition_result_ = result;
+    if (result != KhiResultCode::SUCCESS)
+    {
+      RCLCPP_ERROR(
+        rclcpp::get_logger("khi_hardware"),
+        "%s sequence FAILED in the background: the controller may still hold motor power or the "
+        "RTC program. Check the pendant before the next activation.", transition_what_.c_str());
+    }
+    else
+    {
+      RCLCPP_INFO(
+        rclcpp::get_logger("khi_hardware"), "%s sequence finished (background)",
+        transition_what_.c_str());
+    }
+    is_deactivating_ = false;
+    is_handling_error_ = false;
+    transition_in_flight_.store(false);
+  });
+}
+
+void KhiHardwareInterface::join_transition_worker()
+{
+  if (transition_worker_.joinable())
+  {
+    if (transition_in_flight_.load())
+    {
+      RCLCPP_INFO(
+        rclcpp::get_logger("khi_hardware"), "waiting for the background %s sequence to finish",
+        transition_what_.c_str());
+    }
+    transition_worker_.join();
   }
 }
 
@@ -108,6 +153,7 @@ hardware_interface::CallbackReturn KhiHardwareInterface::on_init(
   publisher_ = std::make_shared<KhiPublisher>();
   service_->init(*driver_);
   publisher_->init(*driver_);
+  register_introspection();
 
   RCLCPP_INFO(rclcpp::get_logger("khi_hardware"), "initialize success");
   return hardware_interface::CallbackReturn::SUCCESS;
@@ -117,6 +163,7 @@ hardware_interface::CallbackReturn KhiHardwareInterface::on_configure(
   const rclcpp_lifecycle::State &)
 {
   RCLCPP_INFO(rclcpp::get_logger("khi_hardware"), "on_configure");
+  join_transition_worker();
 
   auto result = driver_->configure();
   if (result == KhiResultCode::FAILURE) return hardware_interface::CallbackReturn::FAILURE;
@@ -169,6 +216,17 @@ KhiHardwareInterface::export_command_interfaces()
 hardware_interface::CallbackReturn KhiHardwareInterface::on_activate(
   const rclcpp_lifecycle::State &)
 {
+  // A deactivate / error sequence still running in the background finishes first: the
+  // controller is never held and powered on from two threads.
+  join_transition_worker();
+  if (transition_result_ != KhiResultCode::SUCCESS)
+  {
+    RCLCPP_WARN(
+      rclcpp::get_logger("khi_hardware"),
+      "the previous %s sequence had failed; activating anyway (activate re-holds and powers on)",
+      transition_what_.c_str());
+    transition_result_ = KhiResultCode::SUCCESS;
+  }
   auto result = driver_->activate();
 
   if (result == KhiResultCode::FAILURE) return hardware_interface::CallbackReturn::FAILURE;
@@ -185,23 +243,23 @@ hardware_interface::CallbackReturn KhiHardwareInterface::on_deactivate(
 {
   is_deactivating_ = true;
   write_enabled_ = false;
-
-  auto result = driver_->deactivate();
-
   is_active_ = false;
-  is_deactivating_ = false;
 
-  if (result == KhiResultCode::FAILURE) return hardware_interface::CallbackReturn::FAILURE;
-  if (result == KhiResultCode::ERROR) return hardware_interface::CallbackReturn::ERROR;
-
+  // Non-blocking: the KRNX stop sequence runs on the worker (see the header); read() and
+  // write() skip while is_deactivating_ is set, the state interfaces keep their last value
+  // for that second and a half. The lifecycle reports INACTIVE at once; a failure of the
+  // sequence is logged by the worker and re-checked at the next activation.
+  start_transition_worker("deactivate", &KhiDriver::deactivate);
   return hardware_interface::CallbackReturn::SUCCESS;
 }
 
 hardware_interface::return_type KhiHardwareInterface::read(
   const rclcpp::Time &, const rclcpp::Duration &)
 {
-  if (is_cleaning_up_ || is_shutdowning_)
+  if (is_cleaning_up_ || is_shutdowning_ || is_deactivating_ || is_handling_error_)
   {
+    // A background stop sequence owns the controller's AUX/AS channel; no KRNX reads
+    // from the control thread until it is done.
     return hardware_interface::return_type::OK;
   }
 
@@ -321,6 +379,7 @@ hardware_interface::CallbackReturn KhiHardwareInterface::on_cleanup(
   const rclcpp_lifecycle::State & /*previous_state*/)
 {
   RCLCPP_INFO(rclcpp::get_logger("khi_hardware"), "on_cleanup");
+  join_transition_worker();
 
   is_cleaning_up_ = true;
   is_active_ = false;
@@ -347,6 +406,7 @@ hardware_interface::CallbackReturn KhiHardwareInterface::on_shutdown(
   const rclcpp_lifecycle::State & /*previous_state*/)
 {
   RCLCPP_INFO(rclcpp::get_logger("khi_hardware"), "on_shutdown");
+  join_transition_worker();
 
   is_shutdowning_ = true;
   is_active_ = false;
@@ -387,11 +447,9 @@ hardware_interface::CallbackReturn KhiHardwareInterface::on_error(
     publisher_->stop();
   }
 
-  auto result = driver_->error();
-  is_handling_error_ = false;
-  if (result == KhiResultCode::FAILURE) return hardware_interface::CallbackReturn::FAILURE;
-  if (result == KhiResultCode::ERROR) return hardware_interface::CallbackReturn::ERROR;
-
+  // Non-blocking like on_deactivate: with the link gone every KRNX call in the error
+  // sequence runs into its timeout, which used to hold the whole control loop.
+  start_transition_worker("error", &KhiDriver::error);
   return hardware_interface::CallbackReturn::SUCCESS;
 }
 
@@ -418,6 +476,15 @@ KhiRobotArmData KhiHardwareInterface::get_arm_info(const int target_arm_no) cons
 
     arm.joint_types.push_back(joint.parameters.at("type"));
     arm.joint_names.push_back(joint.name);
+    // URDF joint velocity limit = the controller's RTC step limit per cycle (the mock
+    // driver refuses steps past it like the real controller does). Absent: unlimited.
+    double max_velocity = 0.0;
+    const auto lim = info_.limits.find(joint.name);
+    if (lim != info_.limits.end() && lim->second.has_velocity_limits)
+    {
+      max_velocity = lim->second.max_velocity;
+    }
+    arm.max_velocities.push_back(max_velocity);
     for (const auto & command_interface : joint.command_interfaces)
     {
       if (command_interface.name == hardware_interface::HW_IF_POSITION)
@@ -481,6 +548,20 @@ try
   robot.enable_undocumented_krnx_api =
     undocumented_api != info_.hardware_parameters.end() &&
     (undocumented_api->second == "True" || undocumented_api->second == "true");
+  // Simulation tracking lag (KhiMockDriver). Optional; 0 = measured equals commanded.
+  const auto sim_transition = info_.hardware_parameters.find("sim_transition_s");
+  robot.sim_transition_s =
+    (sim_transition != info_.hardware_parameters.end()) ? std::stod(sim_transition->second) : 0.0;
+  const auto sim_lag = info_.hardware_parameters.find("sim_lag_s");
+  robot.sim_lag_s = (sim_lag != info_.hardware_parameters.end()) ? std::stod(sim_lag->second) : 0.0;
+  if (robot.sim_lag_s < 0.0 || robot.sim_lag_s > 2.0)
+  {
+    RCLCPP_FATAL(
+      rclcpp::get_logger("khi_hardware"),
+      "sim_lag_s is %.3f s; it must be within 0..2 s (the CX110L measured 0.08..0.09 s).",
+      robot.sim_lag_s);
+    return false;
+  }
 
   KhiPeriodicDataConfig config = {};
   config.is_actual_current_enabled =
@@ -516,7 +597,9 @@ try
   {
     driver_ = std::make_shared<KhiMockDriver>(robot, config);
     RCLCPP_INFO(
-      rclcpp::get_logger("khi_hardware"), "KHI Robot Hardware Interface in simulation mode");
+      rclcpp::get_logger("khi_hardware"),
+      "KHI Robot Hardware Interface in simulation mode (tracking lag %.3f s, RTC step limits "
+      "from the URDF velocity limits)", robot.sim_lag_s);
   }
   else
   {
@@ -536,6 +619,31 @@ catch (const std::exception & e)
     "the periodic-data flags) and each joint's 'arm'/'type' params and position min/max.",
     e.what());
   return false;
+}
+
+void KhiHardwareInterface::register_introspection()
+{
+  // Published by the controller_manager at its update rate on
+  // ~/introspection_data/{names,values} as "<component>.khi.<field>". The registry
+  // exists only under a controller_manager (REGISTER_ENTITY is a no-op without it).
+  KhiDriverHealth & h = driver_->health();
+  try
+  {
+    REGISTER_ROS2_CONTROL_INTROSPECTION("khi.rtc_backlog", &h.rtc_backlog);
+    REGISTER_ROS2_CONTROL_INTROSPECTION("khi.rtc_refusals", &h.rtc_refusals);
+    REGISTER_ROS2_CONTROL_INTROSPECTION("khi.rtc_seq", &h.rtc_seq);
+    REGISTER_ROS2_CONTROL_INTROSPECTION("khi.write_errors", &h.write_errors);
+    REGISTER_ROS2_CONTROL_INTROSPECTION("khi.read_failures", &h.read_failures);
+    REGISTER_ROS2_CONTROL_INTROSPECTION("khi.feedback_frozen", &h.feedback_frozen);
+    REGISTER_ROS2_CONTROL_INTROSPECTION("khi.read_us", &h.read_us);
+    REGISTER_ROS2_CONTROL_INTROSPECTION("khi.write_us", &h.write_us);
+    REGISTER_ROS2_CONTROL_INTROSPECTION("khi.sim_step_refusals", &h.sim_step_refusals);
+  }
+  catch (const std::exception & e)
+  {
+    RCLCPP_WARN(
+      rclcpp::get_logger("khi_hardware"), "introspection registration failed: %s", e.what());
+  }
 }
 
 }  // namespace khi_hardware

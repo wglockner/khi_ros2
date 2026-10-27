@@ -20,6 +20,7 @@
 #include <vector>
 
 #include "khi_hardware/khi_driver.hpp"
+#include "rclcpp/rclcpp.hpp"
 #include "khi_hardware/khi_periodic_data_config.hpp"
 #include "khi_hardware/khi_result_code.hpp"
 #include "khi_msgs/srv/change_ft_output_mode.hpp"
@@ -43,10 +44,18 @@ public:
   KhiResultCode initialize() override { return KhiResultCode::SUCCESS; }
   KhiResultCode configure() override { return KhiResultCode::SUCCESS; }
   KhiResultCode activate() override { return KhiResultCode::SUCCESS; }
-  KhiResultCode deactivate() override { return KhiResultCode::SUCCESS; }
+  KhiResultCode deactivate() override
+  {
+    simulate_transition();
+    return KhiResultCode::SUCCESS;
+  }
   KhiResultCode cleanup() override { return KhiResultCode::SUCCESS; }
   KhiResultCode shutdown() override { return KhiResultCode::SUCCESS; }
-  KhiResultCode error() override { return KhiResultCode::SUCCESS; }
+  KhiResultCode error() override
+  {
+    simulate_transition();
+    return KhiResultCode::SUCCESS;
+  }
   bool read() override;
   bool write() override;
   bool is_writable() override { return true; };
@@ -85,6 +94,30 @@ public:
   bool get_actual_current(std::vector<float> & /*actual_current*/) const override { return false; }
   bool is_communicating() const override { return true; }
   void monitor_robot_health() override {}
+
+private:
+  // The real deactivate holds the arm, kills the RTC program and powers the motors off
+  // (about 1.6 s of KRNX waits); the mock sleeps sim_transition_s with the transition flag
+  // set, so the non-blocking lifecycle path can be exercised without a controller.
+  void simulate_transition()
+  {
+    if (robot_.sim_transition_s <= 0.0)
+    {
+      return;
+    }
+    transitioning_.store(true);
+    rclcpp::sleep_for(std::chrono::duration_cast<std::chrono::nanoseconds>(
+      std::chrono::duration<double>(robot_.sim_transition_s)));
+    transitioning_.store(false);
+  }
+  // Per-instance counters: two mock components in one controller_manager must not
+  // share function statics.
+  int sim_cnt_read_ = 0;
+  int sim_cnt_write_ = 0;
+  // The last ACCEPTED command per arm/joint (see write(): a point past the step limit
+  // is refused and this stays put), the input of the tracking lag in read().
+  std::vector<std::vector<double>> sim_target_{};
+  rclcpp::Time step_refuse_log_time_{0, 0, RCL_ROS_TIME};
 };
 
 }  // namespace khi_hardware

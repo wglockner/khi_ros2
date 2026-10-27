@@ -15,8 +15,10 @@
 #ifndef KHI_HARDWARE__KHI_HARDWARE_INTERFACE_HPP_
 #define KHI_HARDWARE__KHI_HARDWARE_INTERFACE_HPP_
 
+#include <atomic>
 #include <memory>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "hardware_interface/hardware_info.hpp"
@@ -89,6 +91,19 @@ private:
   int get_arm_no(const hardware_interface::ComponentInfo & joint) const;
   KhiRobotArmData get_arm_info(const int target_arm_no) const;
   bool create_khi_robot_driver();
+  void register_introspection();
+  // The KRNX stop sequence (1 s HOLD grace, hold, kill program, motor power off; about 1.6 s,
+  // longer when the link is gone and every call times out) used to run inside the
+  // controller_manager's loop thread whenever write() returned DEACTIVATE or ERROR, stalling
+  // the OTHER arm's RTC stream for its whole duration (159 missed cycles on 2026-10-27).
+  // It now runs on this worker; the lifecycle callback returns at once. Every later
+  // transition joins it first, so the controller is never driven from two sides.
+  void start_transition_worker(const char * what, KhiResultCode (KhiDriver::*fn)());
+  void join_transition_worker();
+  std::thread transition_worker_;
+  std::atomic<bool> transition_in_flight_{false};
+  KhiResultCode transition_result_{KhiResultCode::SUCCESS};
+  std::string transition_what_;
 
   bool is_cleaning_up_ = false;
   bool is_deactivating_ = false;
